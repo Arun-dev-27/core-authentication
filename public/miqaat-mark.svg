@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Miqaat">
+  <rect width="64" height="64" rx="14" fill="#0E3B3A"/>
+  <g transform="translate(32 32)" fill="none" stroke="#D4AF5A" stroke-width="2.6" stroke-linejoin="round">
+    <rect x="-13" y="-13" width="26" height="26"/>
+    <rect x="-13" y="-13" width="26" height="26" transform="rotate(45)"/>
+    <circle r="6.5" fill="#D4AF5A" stroke="none"/>
+  </g>
+</svg>

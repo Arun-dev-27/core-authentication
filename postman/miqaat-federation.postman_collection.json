@@ -1,0 +1,896 @@
+{
+  "info": {
+    "name": "Miqaat Identity Federation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "## Run order\n1. **1. Sign in**, top to bottom. `Portal page` saves `transaction_id` + `csrf`; `POST /login` saves the CORE `role_id`; the two `select-scope` requests save `access_token` (Authorization API) and `admin_identity_access_token` (Identity admin). Both are also stored as globals `access_token` / `identity_access_token`, which the *Miqaat Core Identity Authorization* collection uses.\n2. **2. Client administration** after changing a client in the Authorization collection.\n3. **3. Embedded login**: `Create transaction` → `Embedded login page` → `Authenticate`.\n\n## CSRF\nBrowser endpoints (`/login`, `/select-scope`, `/portal/*`, `/embed/*`) need `Origin: {{identity}}` (exactly: `localhost`, not `127.0.0.1`) and `X-CSRF-Token` from the page boot JSON, with the matching `transaction_id`. These requests send both. The pair is valid for 5 minutes before sign-in; after a portal sign-in it is bound to that session for the session lifetime. On `403 CSRF_VALIDATION_FAILED`, `details.reason` says why: re-run `Portal page` (or `Embedded login page`).\n\n## Cookies and secrets\nPostman's cookie jar keeps `federation_session` for localhost. `401 SESSION_REQUIRED` means it is missing: run `POST /login` again or check Cookies → localhost. Put `password` in the *current value* only so it is never exported."
+  },
+  "variable": [
+    {
+      "key": "identity",
+      "value": "http://localhost:3001"
+    },
+    {
+      "key": "its_id",
+      "value": "30337752",
+      "description": "Administrator ITS ID (holds a CORE workspace)"
+    },
+    {
+      "key": "password",
+      "value": "",
+      "description": "Set as current value only"
+    },
+    {
+      "key": "transaction_id",
+      "value": "",
+      "description": "Set by Portal page"
+    },
+    {
+      "key": "csrf",
+      "value": "",
+      "description": "Set by Portal page"
+    },
+    {
+      "key": "role_id",
+      "value": "",
+      "description": "Set by POST /login (CORE assignment first)"
+    },
+    {
+      "key": "scope_type",
+      "value": "CORE"
+    },
+    {
+      "key": "scope_id_json",
+      "value": "null",
+      "description": "null for CORE, otherwise the quoted bu_id / utility_id"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "description": "select-scope, audience authorization"
+    },
+    {
+      "key": "admin_identity_access_token",
+      "value": "",
+      "description": "select-scope, audience identity"
+    },
+    {
+      "key": "client_id",
+      "value": "rms-web-dev"
+    },
+    {
+      "key": "origin",
+      "value": "http://localhost:4001",
+      "description": "Registered embed origin of client_id"
+    },
+    {
+      "key": "login_url",
+      "value": "",
+      "description": "Set by Create transaction"
+    },
+    {
+      "key": "embed_transaction_id",
+      "value": "",
+      "description": "Set by Create transaction"
+    },
+    {
+      "key": "embed_csrf",
+      "value": "",
+      "description": "Set by Embedded login page"
+    },
+    {
+      "key": "sid",
+      "value": "",
+      "description": "Session id (the sid claim of a core_assertion) for force logout by sid"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Sign in (portal, CSRF, tokens)",
+      "description": "Run top to bottom. Variables are filled by the test scripts.",
+      "item": [
+        {
+          "name": "Portal page (saves transaction_id + csrf)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const m = pm.response.text().match(/id=\"miqaat-boot\"[^>]*>([\\s\\S]*?)<\\/script>/);",
+                  "pm.test('login page boot JSON found', () => pm.expect(m, 'no boot JSON: read the HTML error page in the response').to.not.equal(null));",
+                  "if (m) {",
+                  "  const boot = JSON.parse(m[1]);",
+                  "  pm.collectionVariables.set('transaction_id', boot.transaction_id);",
+                  "  pm.collectionVariables.set('csrf', boot.csrf);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/portal"
+          }
+        },
+        {
+          "name": "POST /login (workspaces)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "const list = b.assignments || [];",
+                  "const pick = list.find((a) => a.scope_type === 'CORE') || list[0];",
+                  "if (pick) {",
+                  "  pm.collectionVariables.set('role_id', pick.role_id);",
+                  "  pm.collectionVariables.set('scope_type', pick.scope_type);",
+                  "  pm.collectionVariables.set('scope_id_json', pick.scope_id ? JSON.stringify(pick.scope_id) : 'null');",
+                  "}",
+                  "if (b.active_scope && b.token) { pm.collectionVariables.set('access_token', b.token); pm.globals.set('access_token', b.token); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{its_id}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Same as POST /portal/login. Returns every workspace; with exactly one it is activated and a scoped token is returned. Non-ITS: \"identity_type\": \"NON_ITS\", \"identifier\": \"<email>\"."
+          }
+        },
+        {
+          "name": "POST /select-scope (audience authorization → access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.token) { pm.collectionVariables.set('access_token', b.token); }",
+                  "if (b.token) { pm.globals.set('access_token', b.token); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/select-scope",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"role_id\": \"{{role_id}}\",\n  \"scope_type\": \"{{scope_type}}\",\n  \"scope_id\": {{scope_id_json}},\n  \"audience\": \"authorization\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Same as /portal/select-scope; also Switch Workspace. Needs the session cookie + CSRF. Token for the Authorization API (port 3002)."
+          }
+        },
+        {
+          "name": "POST /select-scope (audience identity → admin_identity_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.token) { pm.collectionVariables.set('admin_identity_access_token', b.token); }",
+                  "if (b.token) { pm.globals.set('identity_access_token', b.token); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/select-scope",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"role_id\": \"{{role_id}}\",\n  \"scope_type\": \"{{scope_type}}\",\n  \"scope_id\": {{scope_id_json}},\n  \"audience\": \"identity\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Token for Identity admin endpoints: client refresh (CONFIGURATION edit) and force logout (USER_MGMT edit)."
+          }
+        },
+        {
+          "name": "GET /portal/assignments",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/portal/assignments",
+            "description": "Workspaces of the signed-in session."
+          }
+        },
+        {
+          "name": "GET /portal/applications",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/portal/applications",
+            "description": "Applications the user can launch in PORTAL_ENVIRONMENT."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Client administration",
+      "description": "Apply origin, callback or status changes made in the Authorization service immediately.",
+      "item": [
+        {
+          "name": "Refresh client configuration",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{identity}}/federation/clients/{{client_id}}/refresh",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_identity_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "CORE workspace with CONFIGURATION edit, token audience identity. Returns the reloaded status, allowed_embed_origins and callback_uris. Send no Content-Type (empty body)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Embedded login",
+      "description": "What a BU application does. Transactions are single use and expire after 5 minutes: run Create transaction again for each try.",
+      "item": [
+        {
+          "name": "Create transaction (saves login_url)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.transaction_id) { pm.collectionVariables.set('embed_transaction_id', b.transaction_id); }",
+                  "if (b.login_url) { pm.collectionVariables.set('login_url', b.login_url); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{identity}}/auth/transaction",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{client_id}}\",\n  \"state\": \"postman-state-{{$timestamp}}\",\n  \"origin\": \"{{origin}}\",\n  \"display\": \"embed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "403 ORIGIN_NOT_ALLOWED: add the origin to the client and refresh. 403 CLIENT_NOT_ACTIVE: activate the client."
+          }
+        },
+        {
+          "name": "Embedded login page (saves embed_csrf)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const m = pm.response.text().match(/id=\"miqaat-boot\"[^>]*>([\\s\\S]*?)<\\/script>/);",
+                  "pm.test('login page boot JSON found', () => pm.expect(m, 'no boot JSON: read the HTML error page in the response').to.not.equal(null));",
+                  "if (m) {",
+                  "  const boot = JSON.parse(m[1]);",
+                  "  pm.collectionVariables.set('embed_transaction_id', boot.transaction_id);",
+                  "  pm.collectionVariables.set('embed_csrf', boot.csrf);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              }
+            ],
+            "url": "{{login_url}}",
+            "description": "The iframe page. Its boot JSON carries the CSRF token for this transaction."
+          }
+        },
+        {
+          "name": "Authenticate (POST /embed/login)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{embed_csrf}}"
+              }
+            ],
+            "url": "{{identity}}/embed/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{embed_transaction_id}}\",\n  \"client_id\": \"{{client_id}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{its_id}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Returns MIQAAT_AUTH_SUCCESS with core_assertion (RS256, 60 s, single use) and sets federation_session."
+          }
+        },
+        {
+          "name": "SSO continue (POST /embed/continue)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{embed_csrf}}"
+              }
+            ],
+            "url": "{{identity}}/embed/continue",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{embed_transaction_id}}\",\n  \"client_id\": \"{{client_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Needs a fresh, unused transaction and an existing federation_session: run Create transaction + Embedded login page first."
+          }
+        },
+        {
+          "name": "Current federation session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              }
+            ],
+            "url": "{{identity}}/auth/session"
+          }
+        },
+        {
+          "name": "Client display info",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/auth/client/{{client_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Logout",
+      "description": "",
+      "item": [
+        {
+          "name": "End browser session (POST /embed/logout)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{embed_csrf}}"
+              }
+            ],
+            "url": "{{identity}}/embed/logout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{embed_transaction_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Portal sign out, this browser (scope session)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/portal/logout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"scope\": \"session\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Portal sign out everywhere (scope federation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/portal/logout",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"scope\": \"federation\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Revokes the session and sends logout+jwt to every application that received an assertion."
+          }
+        },
+        {
+          "name": "Force logout a user (administrator)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{identity}}/federation/logout",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_identity_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{its_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "CORE workspace with USER_MGMT edit, audience identity. Returns revoked_sessions and clients_notified."
+          }
+        },
+        {
+          "name": "Force logout a session by sid (administrator)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{identity}}/federation/logout",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{admin_identity_access_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sid\": \"{{sid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Federation logout, browser form from an application",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{origin}}"
+              }
+            ],
+            "url": "{{identity}}/federation/logout",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "client_id",
+                  "value": "{{client_id}}"
+                },
+                {
+                  "key": "logout_hint",
+                  "value": "{{sid}}"
+                },
+                {
+                  "key": "post_logout_redirect_uri",
+                  "value": "{{origin}}/logout/callback"
+                },
+                {
+                  "key": "state",
+                  "value": "postman-logout-state"
+                }
+              ]
+            },
+            "description": "Reference only: a real browser sends it as a top-level form with the federation cookie. 303 to the registered post-logout URI."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Discovery and health",
+      "description": "",
+      "item": [
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/health"
+          }
+        },
+        {
+          "name": "Readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/health/ready",
+            "description": "authorization_service \"up\" only means the Authorization service answers /health."
+          }
+        },
+        {
+          "name": "JWKS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/.well-known/jwks.json"
+          }
+        },
+        {
+          "name": "Federation metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/.well-known/miqaat-federation"
+          }
+        }
+      ]
+    }
+  ]
+}

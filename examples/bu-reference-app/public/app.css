@@ -1,0 +1,26 @@
+:root { --ink:#132120; --muted:#66756f; --line:#e1ddd0; --ground:#f5f3ec; --surface:#fff; --brand:#0e3b3a; --ok:#1f6b4a; --okbg:#e7f4ee; --bad:#a3302a; --badbg:#fbeceb; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 "Segoe UI", system-ui, sans-serif; color: var(--ink); background: var(--ground); }
+.topbar { background: var(--brand); color: #fff; }
+.topbar-inner { max-width: 980px; margin: 0 auto; padding: 14px 20px; display: flex; gap: 12px; align-items: center; }
+.tag { font-size: 12px; opacity: .8; border: 1px solid rgba(255,255,255,.35); padding: 1px 8px; border-radius: 99px; }
+.page { max-width: 980px; margin: 0 auto; padding: 24px 20px 48px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 440px); gap: 24px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+h1 { font-size: 22px; margin: 0 0 6px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+.section-title { margin-top: 18px; }
+.muted { color: var(--muted); }
+iframe.miqaat-login { width: 100%; border: 0; min-height: 520px; background: transparent; display: block; }
+.btn { font: inherit; font-weight: 600; padding: 9px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
+.btn-primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: 14px; }
+.kv code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+pre { background: var(--ground); padding: 10px; border-radius: 8px; overflow: auto; max-height: 220px; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 99px; background: var(--ground); border: 1px solid var(--line); font-size: 12.5px; margin: 2px 4px 2px 0; }
+.alert { padding: 10px 12px; border-radius: 9px; margin: 10px 0; }
+.alert-ok { background: var(--okbg); color: var(--ok); }
+.alert-bad { background: var(--badbg); color: var(--bad); }
+ol.steps { padding-left: 18px; color: var(--muted); font-size: 14px; }

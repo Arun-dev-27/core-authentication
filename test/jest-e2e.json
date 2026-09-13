@@ -1,0 +1,32 @@
+{
+  "moduleFileExtensions": [
+    "js",
+    "json",
+    "ts"
+  ],
+  "rootDir": "..",
+  "testRegex": "test/e2e/.*\\.e2e-spec\\.ts$",
+  "transform": {
+    "^.+\\.ts$": [
+      "ts-jest",
+      {
+        "tsconfig": "tsconfig.json"
+      }
+    ]
+  },
+  "setupFiles": [
+    "<rootDir>/test/e2e/setup-env.ts"
+  ],
+  "testEnvironment": "node",
+  "testTimeout": 90000,
+  "moduleNameMapper": {
+    "^@config$": "<rootDir>/src/config",
+    "^@config/(.*)$": "<rootDir>/src/config/$1",
+    "^@common$": "<rootDir>/src/common",
+    "^@common/(.*)$": "<rootDir>/src/common/$1",
+    "^@core/(.*)$": "<rootDir>/src/core/$1",
+    "^@modules/(.*)$": "<rootDir>/src/modules/$1",
+    "^@shared$": "<rootDir>/src/shared",
+    "^@shared/(.*)$": "<rootDir>/src/shared/$1"
+  }
+}

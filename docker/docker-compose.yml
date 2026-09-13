@@ -1,0 +1,55 @@
+# Local infrastructure for the Identity Federation Service ONLY.
+# The Authentication DB is intentionally a separate PostgreSQL server from the
+# Authorization DB (see ../core-authorization/docker-compose.yml).
+name: miqaat-authn
+
+services:
+  auth-postgres:
+    image: postgres:16-alpine
+    container_name: miqaat-authn-postgres
+    environment:
+      POSTGRES_USER: ${AUTH_DB_USER:-miqaat_auth}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-change-me-local}
+      POSTGRES_DB: ${AUTH_DB_NAME:-miqaat_auth}
+    ports:
+      - "5441:5432"
+    volumes:
+      - authn-pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER:-miqaat_auth} -d ${AUTH_DB_NAME:-miqaat_auth}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  auth-redis:
+    image: redis:7-alpine
+    container_name: miqaat-authn-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6391:6379"
+    volumes:
+      - authn-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Local AWS emulator: Secrets Manager holds the RS256 private keyset exactly as in production.
+  localstack:
+    image: localstack/localstack:4
+    container_name: miqaat-authn-localstack
+    environment:
+      SERVICES: secretsmanager,ssm,kms
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"secretsmanager\": \"\\(available\\|running\\)\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  authn-pgdata:
+  authn-redisdata:

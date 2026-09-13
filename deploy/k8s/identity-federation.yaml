@@ -1,0 +1,166 @@
+# Miqaat Identity Federation Service - EKS manifests (reference).
+# Replace <ACCOUNT_ID>, <REGION>, image tags and hostnames. Secrets come from AWS via External Secrets / IRSA.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+  annotations:
+    # IRSA role: secretsmanager:GetSecretValue + kms:Decrypt on miqaat/identity/prod/signing-keys ONLY
+    eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/miqaat-identity-federation-prod
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: identity-federation-env
+  namespace: miqaat-identity
+spec:
+  refreshInterval: 1h
+  secretStoreRef: { name: aws-secrets-manager, kind: ClusterSecretStore }
+  target: { name: identity-federation-env }
+  data:
+    - { secretKey: AUTH_DB_PASSWORD, remoteRef: { key: miqaat/identity/prod/auth-db, property: password } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-federation-config
+  namespace: miqaat-identity
+data:
+  NODE_ENV: production
+  PORT: "3001"
+  LOG_LEVEL: info
+  TRUST_PROXY: "true"
+  SWAGGER_ENABLED: "false"
+  ISSUER: https://identity.miqaat.com
+  AUTH_DB_HOST: miqaat-auth.cluster-xxxx.<REGION>.rds.amazonaws.com
+  AUTH_DB_PORT: "5432"
+  AUTH_DB_USER: identity_federation
+  AUTH_DB_NAME: miqaat_auth
+  AUTH_DB_SSL: "true"
+  REDIS_URL: rediss://miqaat-identity.xxxx.cache.amazonaws.com:6379/0
+  AUTHZ_BASE_URL: http://core-authorization.miqaat-authz.svc.cluster.local:3002
+  AUTHZ_AUDIENCE: miqaat-core-authorization
+  SERVICE_PRINCIPAL_ID: identity-federation
+  SIGNING_KEY_PROVIDER: secretsmanager
+  SECRETS_MANAGER_SIGNING_KEYS_SECRET_ID: miqaat/identity/prod/signing-keys
+  SIGNING_KEYS_KMS_KEY_ID: arn:aws:kms:<REGION>:<ACCOUNT_ID>:key/<CMK_ID>
+  AWS_REGION: <REGION>
+  KEY_REFRESH_INTERVAL_SECONDS: "300"
+  ASSERTION_TTL_SECONDS: "60"
+  TRANSACTION_TTL_SECONDS: "300"
+  SESSION_IDLE_TTL_SECONDS: "1800"
+  SESSION_ABSOLUTE_TTL_SECONDS: "28800"
+  COOKIE_SECURE: "true"
+  COOKIE_SAMESITE: None
+  PORTAL_ENVIRONMENT: PROD
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+  labels: { app: identity-federation }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector: { matchLabels: { app: identity-federation } }
+  template:
+    metadata:
+      labels: { app: identity-federation }
+    spec:
+      serviceAccountName: identity-federation
+      automountServiceAccountToken: true
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: identity-federation } } }
+      initContainers:
+        - name: migrate
+          image: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/miqaat-identity-federation:1.0.0
+          command: ["node", "node_modules/typeorm/cli.js", "migration:run", "-d", "dist/core/database/data-source.js"]
+          envFrom: [{ configMapRef: { name: identity-federation-config } }, { secretRef: { name: identity-federation-env } }]
+      containers:
+        - name: app
+          image: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/miqaat-identity-federation:1.0.0
+          ports: [{ containerPort: 3001, name: http }]
+          envFrom: [{ configMapRef: { name: identity-federation-config } }, { secretRef: { name: identity-federation-env } }]
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          readinessProbe: { httpGet: { path: /health/ready, port: http }, periodSeconds: 10, failureThreshold: 3 }
+          livenessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 15, failureThreshold: 4 }
+          startupProbe: { httpGet: { path: /health, port: http }, periodSeconds: 3, failureThreshold: 40 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+spec:
+  selector: { app: identity-federation }
+  ports: [{ port: 3001, targetPort: http, name: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<REGION>:<ACCOUNT_ID>:certificate/<CERT_ID>
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:<REGION>:<ACCOUNT_ID>:regional/webacl/miqaat-identity/<ID>
+spec:
+  ingressClassName: alb
+  rules:
+    - host: identity.miqaat.com
+      http:
+        paths:
+          # Public surface only. /docs is disabled in production (SWAGGER_ENABLED=false).
+          - { path: /embed, pathType: Prefix, backend: { service: { name: identity-federation, port: { number: 3001 } } } }
+          - { path: /portal, pathType: Prefix, backend: { service: { name: identity-federation, port: { number: 3001 } } } }
+          - { path: /assets, pathType: Prefix, backend: { service: { name: identity-federation, port: { number: 3001 } } } }
+          - { path: /auth, pathType: Prefix, backend: { service: { name: identity-federation, port: { number: 3001 } } } }
+          - { path: /federation, pathType: Prefix, backend: { service: { name: identity-federation, port: { number: 3001 } } } }
+          - { path: /.well-known, pathType: Prefix, backend: { service: { name: identity-federation, port: { number: 3001 } } } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: identity-federation }
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - { type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: identity-federation } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-federation
+  namespace: miqaat-identity
+spec:
+  podSelector: { matchLabels: { app: identity-federation } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 3001 }]
+  egress:
+    - {} # restrict further to RDS, ElastiCache, Secrets Manager/KMS VPC endpoints, authorization service and BU back-channel endpoints

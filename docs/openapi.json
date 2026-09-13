@@ -1,0 +1,1324 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "HealthController_live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Liveness probe",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "HealthController_ready",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Readiness: auth DB, Redis and signing keys (authorization service reported, not gating)",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/.well-known/jwks.json": {
+      "get": {
+        "operationId": "WellKnownController_jwks",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Public RS256 verification keys (NEXT, ACTIVE, RETIRING). Select by kid.",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/.well-known/miqaat-federation": {
+      "get": {
+        "operationId": "WellKnownController_metadata",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Federation metadata for Business Unit integrations",
+        "tags": [
+          "discovery"
+        ]
+      }
+    },
+    "/v1/auth/client/{clientId}": {
+      "get": {
+        "operationId": "ClientInfoController_get[0]_v1",
+        "parameters": [
+          {
+            "name": "clientId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Public display metadata for a client (no origins, callbacks or secrets)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/client/{clientId}": {
+      "get": {
+        "operationId": "ClientInfoController_get[1]",
+        "parameters": [
+          {
+            "name": "clientId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Public display metadata for a client (no origins, callbacks or secrets)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/transaction": {
+      "post": {
+        "operationId": "TransactionsController_create[0]_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTransactionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Pre-create a short-lived login transaction for a registered client",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/transaction": {
+      "post": {
+        "operationId": "TransactionsController_create[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTransactionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Pre-create a short-lived login transaction for a registered client",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/session": {
+      "get": {
+        "operationId": "SessionController_current[0]_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Current central federation session for this browser (same-origin; cookie based)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/session": {
+      "get": {
+        "operationId": "SessionController_current[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Current central federation session for this browser (same-origin; cookie based)",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/federation/logout": {
+      "post": {
+        "operationId": "FederationController_federationLogout[0]_v1",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FederationLogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Federation-wide logout with back-channel notification of every participating application",
+        "tags": [
+          "federation"
+        ]
+      }
+    },
+    "/federation/logout": {
+      "post": {
+        "operationId": "FederationController_federationLogout[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FederationLogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Federation-wide logout with back-channel notification of every participating application",
+        "tags": [
+          "federation"
+        ]
+      }
+    },
+    "/v1/federation/clients/{clientId}/refresh": {
+      "post": {
+        "operationId": "FederationController_refreshClient[0]_v1",
+        "parameters": [
+          {
+            "name": "clientId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Apply client configuration changes (origins, callbacks, status) immediately",
+        "tags": [
+          "federation"
+        ]
+      }
+    },
+    "/federation/clients/{clientId}/refresh": {
+      "post": {
+        "operationId": "FederationController_refreshClient[1]",
+        "parameters": [
+          {
+            "name": "clientId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Apply client configuration changes (origins, callbacks, status) immediately",
+        "tags": [
+          "federation"
+        ]
+      }
+    },
+    "/v1/embed/login": {
+      "get": {
+        "operationId": "EmbedController_page[0]_v1",
+        "parameters": [
+          {
+            "name": "prompt",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "login",
+                "auto"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "display",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "embed",
+                "page"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "required": false,
+            "in": "query",
+            "description": "Selects a registered callback",
+            "schema": {}
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Parent origin (exact registered value)",
+            "schema": {}
+          },
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "transaction_id",
+            "required": true,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "client_id",
+            "required": true,
+            "in": "query",
+            "schema": {}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Core-controlled login page (iframe, or top-level with display=page)",
+        "tags": [
+          "embed"
+        ]
+      },
+      "post": {
+        "operationId": "EmbedController_authenticate[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "description": "Token from the rendered login page",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Authenticate and return the complete RS256 compact assertion for postMessage/form_post delivery",
+        "tags": [
+          "embed"
+        ]
+      }
+    },
+    "/embed/login": {
+      "get": {
+        "operationId": "EmbedController_page[1]",
+        "parameters": [
+          {
+            "name": "prompt",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "login",
+                "auto"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "display",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "embed",
+                "page"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "required": false,
+            "in": "query",
+            "description": "Selects a registered callback",
+            "schema": {}
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Parent origin (exact registered value)",
+            "schema": {}
+          },
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "transaction_id",
+            "required": true,
+            "in": "query",
+            "schema": {}
+          },
+          {
+            "name": "client_id",
+            "required": true,
+            "in": "query",
+            "schema": {}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Core-controlled login page (iframe, or top-level with display=page)",
+        "tags": [
+          "embed"
+        ]
+      },
+      "post": {
+        "operationId": "EmbedController_authenticate[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "description": "Token from the rendered login page",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Authenticate and return the complete RS256 compact assertion for postMessage/form_post delivery",
+        "tags": [
+          "embed"
+        ]
+      }
+    },
+    "/v1/embed/continue": {
+      "post": {
+        "operationId": "EmbedController_continueSession[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionRefDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "SSO: issue an assertion for this client from the existing federation session",
+        "tags": [
+          "embed"
+        ]
+      }
+    },
+    "/embed/continue": {
+      "post": {
+        "operationId": "EmbedController_continueSession[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionRefDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "SSO: issue an assertion for this client from the existing federation session",
+        "tags": [
+          "embed"
+        ]
+      }
+    },
+    "/v1/embed/logout": {
+      "post": {
+        "operationId": "EmbedController_logout[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedLogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "End the central federation session in this browser (\"use a different account\"); no application fan-out",
+        "tags": [
+          "embed"
+        ]
+      }
+    },
+    "/embed/logout": {
+      "post": {
+        "operationId": "EmbedController_logout[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedLogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "End the central federation session in this browser (\"use a different account\"); no application fan-out",
+        "tags": [
+          "embed"
+        ]
+      }
+    },
+    "/v1/portal": {
+      "get": {
+        "operationId": "PortalController_page[0]_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Core Portal sign-in, workspace selection and application launcher page",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/portal": {
+      "get": {
+        "operationId": "PortalController_page[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Core Portal sign-in, workspace selection and application launcher page",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/v1/portal/login": {
+      "post": {
+        "operationId": "PortalController_signIn[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Sign in; returns every workspace (role × scope) and requires_scope_selection",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/portal/login": {
+      "post": {
+        "operationId": "PortalController_signIn[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Sign in; returns every workspace (role × scope) and requires_scope_selection",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/v1/portal/assignments": {
+      "get": {
+        "operationId": "PortalController_assignments[0]_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Workspaces of the signed-in session (page reload / Switch Workspace)",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/portal/assignments": {
+      "get": {
+        "operationId": "PortalController_assignments[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Workspaces of the signed-in session (page reload / Switch Workspace)",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/v1/portal/select-scope": {
+      "post": {
+        "operationId": "PortalController_selectScope[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectScopeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Activate a workspace; returns active_scope + a token scoped to it (switch without logging out)",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/portal/select-scope": {
+      "post": {
+        "operationId": "PortalController_selectScope[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectScopeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Activate a workspace; returns active_scope + a token scoped to it (switch without logging out)",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/v1/portal/applications": {
+      "get": {
+        "operationId": "PortalController_applications[0]_v1",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Applications the signed-in user may launch (from the Authorization service)",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/portal/applications": {
+      "get": {
+        "operationId": "PortalController_applications[1]",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Applications the signed-in user may launch (from the Authorization service)",
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/v1/portal/logout": {
+      "post": {
+        "operationId": "PortalController_signOut[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalLogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/portal/logout": {
+      "post": {
+        "operationId": "PortalController_signOut[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalLogoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "portal"
+        ]
+      }
+    },
+    "/v1/login": {
+      "post": {
+        "operationId": "CoreLoginController_signIn[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "POST /login - credentials; returns its_id, name, token, requires_scope_selection, assignments",
+        "tags": [
+          "core-login"
+        ]
+      }
+    },
+    "/login": {
+      "post": {
+        "operationId": "CoreLoginController_signIn[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalLoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "POST /login - credentials; returns its_id, name, token, requires_scope_selection, assignments",
+        "tags": [
+          "core-login"
+        ]
+      }
+    },
+    "/v1/select-scope": {
+      "post": {
+        "operationId": "CoreLoginController_selectScope[0]_v1",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectScopeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "POST /select-scope - { role_id, scope_type, scope_id } -> { active_scope, token }",
+        "tags": [
+          "core-login"
+        ]
+      }
+    },
+    "/select-scope": {
+      "post": {
+        "operationId": "CoreLoginController_selectScope[1]",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectScopeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "POST /select-scope - { role_id, scope_type, scope_id } -> { active_scope, token }",
+        "tags": [
+          "core-login"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "Miqaat Identity Federation Service",
+    "description": "Central embedded login, federation sessions, RS256 assertions (JWKS), SSO and federation logout. Authentication only - authorization decisions live in the Core Identity Authorization Service.",
+    "version": "1.0.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "CreateTransactionDto": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "example": "rms-web-prod"
+          },
+          "state": {
+            "type": "string",
+            "example": "b1c9f0d2a7e84f6c",
+            "description": "BU-generated CSRF state, echoed back unchanged"
+          },
+          "origin": {
+            "type": "string",
+            "example": "https://rms.example.com",
+            "description": "Parent origin; must exactly match a registered embed origin"
+          },
+          "redirect_uri": {
+            "type": "string",
+            "description": "Selects one of the registered callback URIs"
+          },
+          "display": {
+            "type": "string",
+            "enum": [
+              "embed",
+              "page"
+            ],
+            "default": "embed"
+          }
+        },
+        "required": [
+          "client_id",
+          "state"
+        ]
+      },
+      "FederationLogoutDto": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "example": "rms-web-prod",
+            "description": "Required for browser-initiated logout from an application"
+          },
+          "logout_hint": {
+            "type": "string",
+            "description": "The `sid` from the assertion the application received"
+          },
+          "post_logout_redirect_uri": {
+            "type": "string",
+            "description": "Must exactly match a registered post-logout redirect URI"
+          },
+          "state": {
+            "type": "string"
+          },
+          "its_id": {
+            "type": "string",
+            "description": "Service-initiated only: revoke every session of this user"
+          },
+          "sid": {
+            "type": "string",
+            "description": "Service-initiated only: revoke this session"
+          }
+        }
+      },
+      "EmbedLoginDto": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "example": "txn-123"
+          },
+          "client_id": {
+            "type": "string",
+            "example": "rms-web-prod"
+          },
+          "identity_type": {
+            "type": "string",
+            "enum": [
+              "ITS",
+              "NON_ITS"
+            ],
+            "default": "ITS"
+          },
+          "its_id": {
+            "type": "string",
+            "example": "ITS12345",
+            "description": "ITS ID (identity_type ITS)"
+          },
+          "identifier": {
+            "type": "string",
+            "example": "member@example.com",
+            "description": "Username or email (identity_type NON_ITS)"
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "client_id",
+          "password"
+        ]
+      },
+      "TransactionRefDto": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "client_id"
+        ]
+      },
+      "EmbedLogoutDto": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "transaction_id"
+        ]
+      },
+      "PortalLoginDto": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          },
+          "identity_type": {
+            "type": "string",
+            "enum": [
+              "ITS",
+              "NON_ITS"
+            ],
+            "default": "ITS"
+          },
+          "its_id": {
+            "type": "string"
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "password"
+        ]
+      },
+      "SelectScopeDto": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "description": "Portal transaction from the login page (CSRF binding)"
+          },
+          "role_id": {
+            "type": "string",
+            "example": "6b1f3c2e-8a3d-4a5b-9c1e-2d3f4a5b6c7d"
+          },
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "CORE",
+              "BUSINESS_UNIT",
+              "UTILITY"
+            ],
+            "example": "UTILITY"
+          },
+          "scope_id": {
+            "type": "object",
+            "nullable": true,
+            "description": "NULL for CORE, else bu_id or utility_id"
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "authorization",
+              "identity"
+            ],
+            "default": "authorization",
+            "description": "authorization = Core Identity Authorization APIs (e.g. GET /me/permissions); identity = this service (force federation logout)"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "role_id",
+          "scope_type"
+        ]
+      },
+      "PortalLogoutDto": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "session",
+              "federation"
+            ],
+            "default": "session"
+          }
+        },
+        "required": [
+          "transaction_id"
+        ]
+      }
+    }
+  }
+}

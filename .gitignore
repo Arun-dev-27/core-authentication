@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets and local state - never commit
+.env
+.env.*
+!.env.example
+.keys/
+.migration/
+*.pem
+
+examples/bu-reference-app/node_modules/
+examples/bu-reference-app/.env
+
+# browser e2e screenshots
+.browser-e2e/
+
+# reference BU service-principal keys (dev only)
+examples/bu-reference-app/.keys/
