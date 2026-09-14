@@ -592,7 +592,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     await app.get(LogoutService).drain();
   });
 
-  it('applies an added or removed embed origin immediately via POST /federation/clients/:id/refresh (CORE + CONFIGURATION edit)', async () => {
+  it('applies an added or removed embed origin at once (fresh read) and via POST /federation/clients/:id/refresh (CORE + CONFIGURATION edit)', async () => {
     const authz = app.get(AuthzClient);
     const NEW_ORIGIN = 'https://rms-admin.example.test';
     const createTxn = (origin: string) =>
@@ -605,7 +605,8 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
       if (id === 'rms-web-test') all[id] = { ...all[id], allowed_embed_origins: [RMS, NEW_ORIGIN] };
       return all[id] ?? null;
     });
-    if (env.CLIENT_CACHE_TTL_SECONDS > 0) expect((await createTxn(NEW_ORIGIN)).json().error).toBe('ORIGIN_NOT_ALLOWED'); // still the cached config
+    // transaction creation reads the client configuration fresh: no refresh call needed
+    expect((await createTxn(NEW_ORIGIN)).statusCode).toBe(201);
 
     jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Platform Admin', requires_scope_selection: true, assignments: [CORE_WS, WORKSPACES[0]] });
     const { boot, cookie } = await portalLogin();
@@ -639,12 +640,52 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     expect(created.statusCode).toBe(201);
     expect(created.json().login_url).toContain(`origin=${encodeURIComponent(NEW_ORIGIN)}`);
 
-    // origin removed again
+    // origin removed again: refused for the next transaction even before the refresh call
     getClient.mockImplementation(async (id: string) => registry()[id] ?? null);
+    expect((await createTxn(NEW_ORIGIN)).json().error).toBe('ORIGIN_NOT_ALLOWED');
     resolve.mockResolvedValueOnce({ active_scope: CORE_WS, permissions: CORE_PERMS });
     expect((await refresh(coreToken)).json().allowed_embed_origins).toEqual([RMS]);
     expect((await createTxn(NEW_ORIGIN)).json().error).toBe('ORIGIN_NOT_ALLOWED');
     resolve.mockResolvedValueOnce({ active_scope: CORE_WS, permissions: CORE_PERMS });
     expect((await refresh(coreToken, 'unknown-client')).json().error).toBe('CLIENT_NOT_FOUND');
+  });
+});
+
+describe('transaction API (POST /auth/transaction, GET /auth/transaction/:id)', () => {
+  const create = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: '/auth/transaction', payload });
+
+  it('returns login_url, bound origin and the CSRF token, which signs in without parsing the login page', async () => {
+    const res = await create({ client_id: 'rms-web-test', state: 'api-state-abcdefghij12345', origin: RMS, display: 'embed' });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body).toMatchObject({ client_id: 'rms-web-test', display: 'embed', state: 'api-state-abcdefghij12345', status: 'PENDING', target_origin: RMS, csrf: expect.any(String), csrf_header: 'x-csrf-token', required_origin: ISSUER });
+
+    // the login page resumes the same transaction and embeds the same token
+    const page = await app.inject({ method: 'GET', url: body.login_url.slice(ISSUER.length) });
+    expect(bootOf(page.body).csrf).toBe(body.csrf);
+
+    const login = await postLogin({ transaction_id: body.transaction_id, csrf: body.csrf }, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({ type: 'MIQAAT_AUTH_SUCCESS', transaction_id: body.transaction_id, target_origin: RMS });
+
+    const status = await app.inject({ method: 'GET', url: `/auth/transaction/${body.transaction_id}?client_id=rms-web-test` });
+    expect(status.json()).toMatchObject({ transaction_id: body.transaction_id, status: 'COMPLETED', target_origin: RMS });
+    expect(status.json()).not.toHaveProperty('csrf');
+    expect((await app.inject({ method: 'GET', url: `/auth/transaction/${body.transaction_id}?client_id=ams-web-test` })).json().error).toBe('TRANSACTION_INVALID');
+  });
+
+  it('binds one of several registered origins and requires origin when there is more than one', async () => {
+    const TWO = 'https://rms-admin.example.test';
+    const getClient = jest.spyOn(app.get(AuthzClient), 'getClient').mockImplementation(async (id: string) => {
+      const all = registry();
+      all['rms-web-test'] = { ...all['rms-web-test'], allowed_embed_origins: [RMS, TWO] };
+      return all[id] ?? null;
+    });
+    const chosen = await create({ client_id: 'rms-web-test', state: 'multi-state-abcdefghij-1', origin: TWO });
+    expect(chosen.json().target_origin).toBe(TWO);
+    expect(new URL(chosen.json().login_url).searchParams.get('origin')).toBe(TWO);
+    expect((await create({ client_id: 'rms-web-test', state: 'multi-state-abcdefghij-2' })).json().error).toBe('ORIGIN_NOT_ALLOWED');
+    expect((await create({ client_id: 'rms-web-test', state: 'multi-state-abcdefghij-3', origin: 'https://evil.example.test' })).json().error).toBe('ORIGIN_NOT_ALLOWED');
+    getClient.mockImplementation(async (id: string) => registry()[id] ?? null);
   });
 });

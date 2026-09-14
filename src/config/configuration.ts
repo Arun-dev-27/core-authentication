@@ -53,6 +53,12 @@ export const envSchema = z
 
     ASSERTION_TTL_SECONDS: z.coerce.number().int().min(10).max(300).default(60),
     TRANSACTION_TTL_SECONDS: seconds(300),
+    // POST /auth/transaction also returns the login page's CSRF token, so API clients need not parse the HTML.
+    // Unset: on outside production, off in production. The Origin check applies either way.
+    TRANSACTION_API_RETURNS_CSRF: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === 'true')),
     SESSION_IDLE_TTL_SECONDS: seconds(1800),
     SESSION_ABSOLUTE_TTL_SECONDS: seconds(28800),
 

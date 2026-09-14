@@ -83,6 +83,12 @@ export class TransactionService {
     return raw ? (JSON.parse(raw) as LoginTransaction) : null;
   }
 
+  /** Seconds until the transaction expires; 0 when it no longer exists. */
+  async remainingSeconds(transactionId: string): Promise<number> {
+    if (!TRANSACTION_ID_PATTERN.test(transactionId)) return 0;
+    return Math.max(0, await this.redis.ttl(RedisKeys.transaction(transactionId)));
+  }
+
   /** Loads a PENDING transaction bound to the expected client, or throws. */
   async requirePending(transactionId: unknown, clientId: string | null): Promise<LoginTransaction> {
     const txn = await this.get(transactionId);

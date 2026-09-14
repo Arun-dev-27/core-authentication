@@ -33,19 +33,23 @@ const app = Fastify({ logger: { level: 'info', redact: ['req.headers.cookie', '*
 app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(PAGE));
 
 /** Backend step 1: pre-create the transaction on Identity (server-to-server) and remember the state. */
-app.post('/api/start', async (_req, reply) => {
+app.post('/api/start', async (req, reply) => {
+  // Bind the transaction to the origin the page is actually served from (any origin registered for the client).
+  const origin = typeof req.headers.origin === 'string' && /^https?:\/\/[^/]+$/.test(req.headers.origin) ? req.headers.origin : ORIGIN;
   const state = randomBytes(24).toString('base64url');
+  const request = { client_id: CLIENT_ID, state, origin, display: 'embed' };
   const res = await fetch(`${IDENTITY}/auth/transaction`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ client_id: CLIENT_ID, state, origin: ORIGIN, display: 'embed' }),
+    body: JSON.stringify(request),
   });
-  const body = (await res.json()) as { transaction_id?: string; login_url?: string; error?: string; message?: string };
+  const body = (await res.json()) as { transaction_id?: string; login_url?: string; expires_in?: number; error?: string; message?: string };
   if (!res.ok || !body.transaction_id) {
-    return reply.status(res.status).send({ error: body.error, message: body.message, hint: body.error === 'ORIGIN_NOT_ALLOWED' ? `register ${ORIGIN}: npm run client -- origins add ${CLIENT_ID} ${ORIGIN}` : undefined });
+    return reply.status(res.status).send({ error: body.error, message: body.message, hint: body.error === 'ORIGIN_NOT_ALLOWED' ? `register ${origin}: npm run client -- origins add ${CLIENT_ID} ${origin}` : undefined });
   }
-  pending.set(body.transaction_id, { state, expires: Date.now() + 300_000 });
-  return { request: { client_id: CLIENT_ID, state, origin: ORIGIN, display: 'embed' }, response: body };
+  pending.set(body.transaction_id, { state, expires: Date.now() + (body.expires_in ?? 300) * 1000 });
+  // The CSRF token is for the login page itself; never show it in the parent page.
+  return { request, response: { ...body, csrf: body && 'csrf' in body ? '(returned; used only by the login page)' : undefined } };
 });
 
 /** Backend step 2: verify the assertion received via postMessage, then ask Authorization. */

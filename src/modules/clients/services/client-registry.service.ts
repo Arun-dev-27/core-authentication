@@ -49,6 +49,15 @@ export class ClientRegistry {
     return client;
   }
 
+  /**
+   * Reads the configuration from the Authorization service now (and refreshes the cache). Used when a transaction is
+   * created, the login page opens and a user signs in, so an added or removed origin, callback or status change applies at once.
+   */
+  async getFresh(clientId: unknown): Promise<FederationClientConfig> {
+    if (typeof clientId === 'string' && CLIENT_ID_PATTERN.test(clientId)) await this.invalidate(clientId);
+    return this.get(clientId);
+  }
+
   async invalidate(clientId: string): Promise<void> {
     await this.redis.del(RedisKeys.clientConfig(clientId));
   }

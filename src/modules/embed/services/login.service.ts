@@ -135,7 +135,7 @@ export class LoginService {
 
   /** Client may have been suspended or reconfigured since the transaction started. */
   private async revalidateClient(txn: LoginTransaction) {
-    const client = await this.registry.get(txn.client_id);
+    const client = await this.registry.getFresh(txn.client_id);
     assertClientCanAuthenticate(client, txn.display === 'page' ? 'page' : 'embed');
     if (txn.embed_origin && !client.allowed_embed_origins.includes(txn.embed_origin)) throw Errors.originNotAllowed();
     if (txn.callback_uri && !client.callback_uris.includes(txn.callback_uri)) throw Errors.callbackNotAllowed();

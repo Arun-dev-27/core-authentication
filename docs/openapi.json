@@ -128,7 +128,7 @@
             "description": ""
           }
         },
-        "summary": "Pre-create a short-lived login transaction for a registered client",
+        "summary": "Create a login transaction for a registered client: login_url, bound origin, expiry and (configurable) CSRF token",
         "tags": [
           "auth"
         ]
@@ -153,7 +153,71 @@
             "description": ""
           }
         },
-        "summary": "Pre-create a short-lived login transaction for a registered client",
+        "summary": "Create a login transaction for a registered client: login_url, bound origin, expiry and (configurable) CSRF token",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/auth/transaction/{transactionId}": {
+      "get": {
+        "operationId": "TransactionsController_status[0]_v1",
+        "parameters": [
+          {
+            "name": "transactionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Transaction status (PENDING or COMPLETED), bound origin and remaining lifetime",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/transaction/{transactionId}": {
+      "get": {
+        "operationId": "TransactionsController_status[1]",
+        "parameters": [
+          {
+            "name": "transactionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_id",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Transaction status (PENDING or COMPLETED), bound origin and remaining lifetime",
         "tags": [
           "auth"
         ]

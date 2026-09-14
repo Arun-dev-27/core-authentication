@@ -54,7 +54,8 @@ export class EmbedController {
     const display: DisplayMode = query.display === 'page' ? 'page' : 'embed';
     const failure: FailureContext = { framedBy: null, openedTopLevelFor: null, query };
     try {
-      const client = await this.registry.get(query.client_id);
+      // Fresh configuration: an origin added or removed in the Authorization service applies to this page load.
+      const client = await this.registry.getFresh(query.client_id);
       assertClientCanAuthenticate(client, display);
       const embedOrigin = display === 'embed' ? resolveEmbedOrigin(client, query.origin) : null;
       const callback = resolveCallback(client, query.redirect_uri);

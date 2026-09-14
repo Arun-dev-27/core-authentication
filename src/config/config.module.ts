@@ -17,6 +17,11 @@ export class AppConfig {
     return this.env.NODE_ENV === 'production';
   }
 
+  /** Whether POST /auth/transaction returns the CSRF token (TRANSACTION_API_RETURNS_CSRF; default: on outside production). */
+  get transactionApiReturnsCsrf(): boolean {
+    return this.env.TRANSACTION_API_RETURNS_CSRF ?? !this.isProduction;
+  }
+
   get jwksUri(): string {
     return `${this.issuerOrigin}/.well-known/jwks.json`;
   }
