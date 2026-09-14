@@ -39,6 +39,10 @@ export interface VerifierOptions {
 }
 
 export interface VerifiedAssertion {
+  /** `iss` as issued (already checked to equal the configured issuer). */
+  issuer: string;
+  /** `aud` as issued (already checked to equal this client_id exactly). */
+  audience: string;
   itsId: string;
   sid: string;
   jti: string;
@@ -86,6 +90,8 @@ export class CoreAssertionVerifier {
 
     await this.claimJti('assertion', payload);
     return {
+      issuer: payload.iss as string,
+      audience: payload.aud as string,
       itsId: payload.sub,
       sid: payload.sid,
       jti: payload.jti as string,

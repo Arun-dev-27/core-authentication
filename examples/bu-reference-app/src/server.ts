@@ -22,6 +22,7 @@ import { AuthorizationClient } from './authorization-client';
 import { AssertionVerificationError, CoreAssertionVerifier, RedisReplayStore } from './core-assertion-verifier';
 import { LocalSessionStore } from './local-session-store';
 import { ServiceCredentials } from './service-credentials';
+import { CoreAssertionClaims, SessionCookieCipher } from './session-cookie-cipher';
 
 const { values } = parseArgs({ options: { env: { type: 'string' } } });
 if (values.env) process.loadEnvFile(values.env);
@@ -48,6 +49,9 @@ const config = {
   demoModule: required('DEMO_MODULE'),
   demoActions: (process.env.DEMO_ACTIONS ?? 'view,create,update,delete').split(',').map((a) => a.trim()),
   cookieSecure: process.env.COOKIE_SECURE !== 'false',
+  sessionTtlSeconds: Number(process.env.SESSION_TTL_SECONDS ?? 8 * 3600),
+  sessionEncKey: process.env.SESSION_ENC_KEY ?? '',
+  sessionKeyFile: process.env.SESSION_KEY_FILE ?? '',
   otherApps: (process.env.OTHER_APPS ?? '')
     .split(',')
     .filter(Boolean)
@@ -59,7 +63,15 @@ const config = {
 const loginCookie = `${config.sessionCookie.replace(/_session$/, '')}_login_txn`;
 
 const redis = new Redis(config.redisUrl);
-const sessions = new LocalSessionStore(redis, config.clientId);
+if (!Number.isInteger(config.sessionTtlSeconds) || config.sessionTtlSeconds < 60) throw new Error('SESSION_TTL_SECONDS must be an integer >= 60');
+const sessions = new LocalSessionStore(redis, config.clientId, config.sessionTtlSeconds);
+// The session cookie carries the verified assertion claims, encrypted with this application's own key.
+const cookieCipher = SessionCookieCipher.load({
+  issuer: config.appOrigin,
+  audience: config.clientId,
+  keyBase64url: config.sessionEncKey || undefined,
+  keyFile: config.sessionKeyFile || join(__dirname, '..', '.keys', `${config.clientId}-session.key`),
+});
 // This backend's service-principal key (no API key): private key stays here, public key served at /.well-known/jwks.json.
 const credentials = ServiceCredentials.load(config.servicePrincipalId, config.serviceKeyFile || join(__dirname, '..', '.keys', `${config.servicePrincipalId}.pem`));
 const authz = new AuthorizationClient(config.authzBaseUrl, credentials, config.authzAudience, config.clientId, redis);
@@ -100,8 +112,33 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb) && a.length === b.length;
 }
 
+/**
+ * Decrypts the session cookie (tag, iss, aud, exp) and requires its Redis session to still exist with the same sid:
+ * local and back-channel logout delete that session, so a copied cookie stops working at once.
+ */
 async function currentSession(req: FastifyRequest) {
-  return sessions.get(req.cookies[config.sessionCookie]);
+  const cookie = await cookieCipher.open(req.cookies[config.sessionCookie]);
+  if (!cookie) return null;
+  const session = await sessions.get(cookie.lid);
+  if (!session || session.sid !== cookie.core.sid) return null;
+  return { ...session, localId: cookie.lid, core: cookie.core, expiresAt: cookie.exp };
+}
+
+/**
+ * The origin of the page that called us. A client may register several origins (e.g. the app and its admin site), so the
+ * transaction is bound to the page actually in use; Identity accepts it only if it is registered for this client.
+ */
+function pageOrigin(req: FastifyRequest): string {
+  const header = req.headers.origin;
+  if (typeof header === 'string') {
+    try {
+      const url = new URL(header);
+      if ((url.protocol === 'https:' || url.protocol === 'http:') && url.origin === header) return url.origin;
+    } catch {
+      // fall through to the configured origin
+    }
+  }
+  return config.appOrigin;
 }
 
 function fail(reply: FastifyReply, status: number, error: string, form: boolean) {
@@ -138,7 +175,7 @@ app.post<{ Body: { display?: string; prompt?: string } }>('/auth/core/start', as
   reply.setCookie(loginCookie, transactionId, { ...cookieBase, sameSite: 'none', secure: true, path: '/auth/core', maxAge: 300 });
 
   const params = new URLSearchParams({ client_id: config.clientId, transaction_id: transactionId, state });
-  if (display === 'embed') params.set('origin', config.appOrigin);
+  if (display === 'embed') params.set('origin', pageOrigin(req));
   else params.set('display', 'page');
   if (req.body?.prompt === 'auto' || req.body?.prompt === 'login') params.set('prompt', req.body.prompt);
   return { transaction_id: transactionId, state, login_url: `${config.identityOrigin}/embed/login?${params.toString()}` };
@@ -188,7 +225,19 @@ app.post<{ Body: { transaction_id?: unknown; state?: unknown; core_assertion?: u
 
   // 18. local application session (independent of federation_session)
   const localId = await sessions.create({ its_id: verified.itsId, sid: verified.sid, auth_time: verified.authTime });
-  reply.setCookie(config.sessionCookie, localId, { ...cookieBase, sameSite: 'lax', maxAge: 8 * 3600 });
+  const core: CoreAssertionClaims = {
+    iss: verified.issuer,
+    sub: verified.itsId,
+    aud: verified.audience,
+    sid: verified.sid,
+    jti: verified.jti,
+    txn: verified.transactionId,
+    auth_time: verified.authTime,
+    iat: verified.issuedAt,
+    exp: verified.expiresAt,
+  };
+  const sessionCookie = await cookieCipher.seal(localId, core, assertion, config.sessionTtlSeconds);
+  reply.setCookie(config.sessionCookie, sessionCookie, { ...cookieBase, sameSite: 'lax', maxAge: config.sessionTtlSeconds });
   req.log.info({ its_id: verified.itsId, sid: verified.sid }, 'local session created');
 
   // 19. redirect into the application
@@ -200,7 +249,16 @@ app.get('/api/me', async (req, reply) => {
   const session = await currentSession(req);
   if (!session) return reply.status(401).send({ error: 'NOT_AUTHENTICATED' });
   const effective = await authz.effective(session.its_id).catch(() => null);
-  return { its_id: session.its_id, sid: session.sid, auth_time: session.auth_time, client_id: config.clientId, app_name: config.appName, effective };
+  return {
+    its_id: session.its_id,
+    sid: session.sid,
+    auth_time: session.auth_time,
+    client_id: config.clientId,
+    app_name: config.appName,
+    assertion: session.core,
+    session: { expires_at: new Date(session.expiresAt * 1000).toISOString() },
+    effective,
+  };
 });
 
 /** Protected business API: every call enforces a permission server-side (never trusts the browser). */
@@ -216,21 +274,23 @@ app.get<{ Params: { action: string } }>('/api/demo/:action', async (req, reply) 
 
 // ----------------------------------------------------------------- logout
 app.post('/auth/logout', async (req, reply) => {
-  await sessions.destroy(req.cookies[config.sessionCookie]);
+  const cookie = await cookieCipher.open(req.cookies[config.sessionCookie]);
+  await sessions.destroy(cookie?.lid);
   reply.clearCookie(config.sessionCookie, { ...cookieBase, sameSite: 'lax' });
   return { logged_out: true, scope: 'application' };
 });
 
 /** Ends the local session and returns the form the browser must POST (top-level) to Identity Federation. */
 app.post('/auth/logout/federated', async (req, reply) => {
-  const session = await sessions.destroy(req.cookies[config.sessionCookie]);
+  const cookie = await cookieCipher.open(req.cookies[config.sessionCookie]);
+  const session = await sessions.destroy(cookie?.lid);
   reply.clearCookie(config.sessionCookie, { ...cookieBase, sameSite: 'lax' });
   return {
     action: `${config.identityOrigin}/federation/logout`,
     fields: {
       client_id: config.clientId,
       logout_hint: session?.sid ?? '',
-      post_logout_redirect_uri: `${config.appOrigin}/logout/callback`,
+      post_logout_redirect_uri: `${pageOrigin(req)}/logout/callback`,
       state: randomBytes(16).toString('base64url'),
     },
   };

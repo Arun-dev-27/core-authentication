@@ -117,9 +117,14 @@
           el('span', { class: 'muted', text: 'ITS ID' }), el('code', { text: me.its_id }),
           el('span', { class: 'muted', text: 'Client' }), el('code', { text: me.client_id }),
           el('span', { class: 'muted', text: 'Federation sid' }), el('code', { text: me.sid }),
+          el('span', { class: 'muted', text: 'Session expires' }), el('code', { text: me.session ? me.session.expires_at : 'unknown' }),
           el('span', { class: 'muted', text: 'Roles' }), el('span', {}, eff.roles.length ? eff.roles.map(function (r) { return el('span', { class: 'pill', text: r.role_name }); }) : [el('span', { class: 'muted', text: 'none' })]),
           el('span', { class: 'muted', text: 'Permissions' }), el('span', {}, eff.permissions.map(function (p) { return el('span', { class: 'pill', text: p }); })),
         ]),
+        me.assertion ? el('details', {}, [
+          el('summary', { text: 'Core assertion claims (verified, stored in the encrypted session cookie)' }),
+          el('pre', { text: JSON.stringify(me.assertion, null, 2) }),
+        ]) : null,
         el('h2', { class: 'section-title', text: 'Protected API: ' + cfg.module + ' module' }),
         el('div', { class: 'row' }, cfg.actions.map(function (action) {
           return el('button', { class: 'btn', text: action, onClick: function () {
