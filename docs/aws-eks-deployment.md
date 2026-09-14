@@ -39,6 +39,7 @@ Separate clusters, security groups and IAM principals keep credentials and autho
 
 ## Zero-downtime changes
 
-* Client configuration changes propagate within `CLIENT_CACHE_TTL_SECONDS` (30 s).
+* Client configuration changes (origins, callbacks, status) apply to the next transaction, login page and sign-in, which read it fresh;
+  other cached lookups follow within `CLIENT_CACHE_TTL_SECONDS` (30 s). Each fresh read is one internal call to the Authorization service.
 * Key rotation is online (stage → wait → promote → wait → retire).
 * Rolling updates: `maxUnavailable: 0`; in-flight back-channel deliveries are drained on shutdown.

@@ -38,7 +38,7 @@ sequenceDiagram
   BE->>BE: RS256 + iss + aud(exact) + exp + iat + lifetime + txn + sid + jti(SET NX)
   BE->>AZ: POST /authorization/effective-permissions {its_id: sub, client_id}
   AZ-->>BE: GRANTED + roles/modules/permissions
-  BE-->>FE: Set-Cookie rms_session (local) → app
+  BE-->>FE: Set-Cookie rms_session (JWE with verified claims + core_assertion, app key) → app
 ```
 
 ## 2. SSO into a second application (AMS)

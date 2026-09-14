@@ -17,9 +17,17 @@ const transactionId = `txn_${randomBytes(18).toString('base64url')}`;
 const state = randomBytes(24).toString('base64url');
 await redis.set(`bu:${CLIENT_ID}:login:${transactionId}`, JSON.stringify({ state }), 'EX', 300);
 reply.setCookie('rms_login_txn', transactionId, { httpOnly: true, secure: true, sameSite: 'none', path: '/auth/core', maxAge: 300 });
+// The calling page's own origin: a client may register several (e.g. the app and its admin site).
+// Identity accepts it only if it is registered for CLIENT_ID.
+const origin = new URL(req.headers.origin ?? APP_ORIGIN).origin;
 return { transaction_id: transactionId, state,
-  login_url: `${IDENTITY}/embed/login?client_id=${CLIENT_ID}&transaction_id=${transactionId}&state=${state}&origin=${APP_ORIGIN}` };
+  login_url: `${IDENTITY}/embed/login?client_id=${CLIENT_ID}&transaction_id=${transactionId}&state=${state}&origin=${encodeURIComponent(origin)}` };
 ```
+
+Alternatively let Identity create the transaction: `POST /auth/transaction { client_id, state, origin, display }` returns
+`transaction_id`, `target_origin`, `login_url`, `expires_in`, `status` and, outside production, the transaction's `csrf` token
+(`TRANSACTION_API_RETURNS_CSRF`). Identity reads your client configuration fresh for every transaction, so an origin added or removed
+in the Authorization service applies to the next sign-in without a refresh call. `GET /auth/transaction/:id?client_id=` shows its status.
 
 ## 3. Embed and receive the assertion (frontend)
 
@@ -65,16 +73,22 @@ const pending = JSON.parse(await redis.getdel(`bu:rms-web-prod:login:${body.tran
 if (!pending || !safeEqual(pending.state, body.state)) throw 'STATE_MISMATCH';
 
 // 3-15: kid → JWKS → RS256 → iss → aud (exact) → exp → iat → lifetime → txn → sid → jti replay
-const { itsId, sid } = await verifier.verifyLoginAssertion(body.core_assertion, { transactionId: body.transaction_id });
+const v = await verifier.verifyLoginAssertion(body.core_assertion, { transactionId: body.transaction_id });
 
 // 16-17: map + authorize (server-side)
-const access = await authz.effective(itsId);          // POST /authorization/effective-permissions
+const access = await authz.effective(v.itsId);          // POST /authorization/effective-permissions
 if (access.access !== 'GRANTED') throw 'ACCESS_DENIED';
 
-// 18-19: local session
-const id = await sessions.create({ its_id: itsId, sid });
-reply.setCookie('rms_session', id, { httpOnly: true, secure: true, sameSite: 'lax', path: '/' });
+// 18-19: local session (Redis = revocation list) + encrypted session cookie (examples/bu-reference-app/src/session-cookie-cipher.ts)
+const id = await sessions.create({ its_id: v.itsId, sid: v.sid, auth_time: v.authTime });
+const core = { iss: v.issuer, sub: v.itsId, aud: v.audience, sid: v.sid, jti: v.jti, txn: v.transactionId, auth_time: v.authTime, iat: v.issuedAt, exp: v.expiresAt };
+const cookie = await cookieCipher.seal(id, core, body.core_assertion, SESSION_TTL_SECONDS); // JWE dir + A256GCM, your own key
+reply.setCookie('rms_session', cookie, { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: SESSION_TTL_SECONDS });
 ```
+
+On every request decrypt the cookie with `cookieCipher.open()` (tag, `iss` = your origin, `aud` = your client_id, `exp`) and require
+the Redis session `lid` to still exist with the same `sid`, so local and back-channel logout revoke a copied cookie at once.
+The key (`SESSION_ENC_KEY`, 32 random bytes) comes from your own secret store, never from Core. Details: README section 6.1.
 
 ## 5. Authorize every protected API
 

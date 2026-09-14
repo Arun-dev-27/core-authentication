@@ -15,6 +15,9 @@ Status legend: ✅ implemented and covered by automated tests · 🟢 implemente
 ## CSRF, sessions, cookies
 - ✅ Per-transaction CSRF token (`x-csrf-token`) + Origin must equal the issuer for state-changing calls — e2e
 - ✅ Portal CSRF token bound to the signed-in session (`sid`) after login: valid for the session lifetime, refused for any other session — e2e
+- 🟢 `POST /auth/transaction` returns the transaction's CSRF token only when `TRANSACTION_API_RETURNS_CSRF` is true (default off in production); the Origin check still applies — unit, live
+- ✅ Client configuration is read fresh for transaction creation, the login page and sign-in: a removed origin or suspended client is refused on the very next request, without a refresh call — unit, e2e, live
+- ✅ BU reference session cookie: JWE (`dir`, `A256GCM`) with the application's own key, bound to its origin and client_id, revoked through the Redis session on local or back-channel logout — unit
 - ✅ Cookie holds only an opaque 256-bit handle; Redis indexes its SHA-256; `sid` in assertions is a different value — e2e
 - ✅ `HttpOnly; Secure; SameSite=None; Path=/` — e2e; production config refuses `COOKIE_SECURE=false`
 - ✅ New handle on every password login (session fixation); user switch logs the previous user out everywhere

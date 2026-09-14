@@ -10,7 +10,7 @@
 | `federation:user-sessions:<its_id>` | set | sids | absolute TTL | login |
 | `federation:session-clients:<sid>` | set | client_ids that received assertions | session TTL | assertion issuance |
 | `federation:jti:<jti>` | string | `client_id|sid` (traceability, no token) | `ASSERTION_TTL_SECONDS` | assertion issuance |
-| `federation:client-cfg:<client_id>` | string | client config JSON or `__NOT_FOUND__` | 30 s (10 s negative) | client registry |
+| `federation:client-cfg:<client_id>` | string | client config JSON or `__NOT_FOUND__` | 30 s (10 s negative); deleted and re-read on transaction creation, login page and sign-in, so changes apply at once there | client registry |
 | `ratelimit:login:ip:<ip>` | counter | attempts | `LOGIN_IP_WINDOW_SECONDS` | every login attempt |
 | `ratelimit:login:id:<sha256(type:identifier)>` | counter | failures | `LOGIN_IDENTIFIER_WINDOW_SECONDS` | failed logins |
 

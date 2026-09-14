@@ -2,7 +2,7 @@
   "info": {
     "name": "Miqaat Identity Federation",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "## Run order\n1. **1. Sign in**, top to bottom. `Portal page` saves `transaction_id` + `csrf`; `POST /login` saves the CORE `role_id`; the two `select-scope` requests save `access_token` (Authorization API) and `admin_identity_access_token` (Identity admin). Both are also stored as globals `access_token` / `identity_access_token`, which the *Miqaat Core Identity Authorization* collection uses.\n2. **2. Client administration** after changing a client in the Authorization collection.\n3. **3. Embedded login**: `Create transaction` → `Embedded login page` → `Authenticate`.\n\n## CSRF\nBrowser endpoints (`/login`, `/select-scope`, `/portal/*`, `/embed/*`) need `Origin: {{identity}}` (exactly: `localhost`, not `127.0.0.1`) and `X-CSRF-Token` from the page boot JSON, with the matching `transaction_id`. These requests send both. The pair is valid for 5 minutes before sign-in; after a portal sign-in it is bound to that session for the session lifetime. On `403 CSRF_VALIDATION_FAILED`, `details.reason` says why: re-run `Portal page` (or `Embedded login page`).\n\n## Cookies and secrets\nPostman's cookie jar keeps `federation_session` for localhost. `401 SESSION_REQUIRED` means it is missing: run `POST /login` again or check Cookies → localhost. Put `password` in the *current value* only so it is never exported."
+    "description": "## Run order\n1. **1. Sign in**, top to bottom. `Portal page` saves `transaction_id` + `csrf`; `POST /login` saves the CORE `role_id`; the two `select-scope` requests save `access_token` (Authorization API) and `admin_identity_access_token` (Identity admin). Both are also stored as globals `access_token` / `identity_access_token`, which the *Miqaat Core Identity Authorization* collection uses.\n2. **2. Client administration** after changing a client in the Authorization collection.\n3. **3. Embedded login**: `Create transaction` (saves the CSRF token) → `Authenticate` (saves `core_assertion` and `sid`). `Transaction status` shows PENDING/COMPLETED; `Embedded login page` is only needed when the API does not return the token (production).\n4. **5. Business unit app (RMS reference)**: RMS start → Identity login page → Identity sign in → RMS callback → `/api/me` shows the claims stored in the encrypted `rms_session` cookie. Needs a user with an RMS role.\n\n## CSRF\nBrowser endpoints (`/login`, `/select-scope`, `/portal/*`, `/embed/*`) need `Origin: {{identity}}` (exactly: `localhost`, not `127.0.0.1`) and `X-CSRF-Token` from the page boot JSON, with the matching `transaction_id`. These requests send both. The pair is valid for 5 minutes before sign-in; after a portal sign-in it is bound to that session for the session lifetime. On `403 CSRF_VALIDATION_FAILED`, `details.reason` says why: re-run `Portal page` (or `Embedded login page`).\n\n## Cookies and secrets\nPostman's cookie jar keeps `federation_session` for localhost. `401 SESSION_REQUIRED` means it is missing: run `POST /login` again or check Cookies → localhost. Put `password` in the *current value* only so it is never exported."
   },
   "variable": [
     {
@@ -80,7 +80,22 @@
     {
       "key": "sid",
       "value": "",
-      "description": "Session id (the sid claim of a core_assertion) for force logout by sid"
+      "description": "Set by Authenticate: the sid claim of the core_assertion (force logout by sid, federation logout form)"
+    },
+    {
+      "key": "core_assertion",
+      "value": "",
+      "description": "Set by Authenticate / Identity sign in for RMS: compact RS256 token, 60 s, single use"
+    },
+    {
+      "key": "rms",
+      "value": "http://localhost:4001",
+      "description": "RMS reference application (client rms-web-dev)"
+    },
+    {
+      "key": "bu_state",
+      "value": "",
+      "description": "Set by RMS: start login"
     }
   ],
   "item": [
@@ -300,6 +315,104 @@
             "url": "{{identity}}/portal/applications",
             "description": "Applications the user can launch in PORTAL_ENVIRONMENT."
           }
+        },
+        {
+          "name": "POST /portal/login (alias of POST /login)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "const list = b.assignments || [];",
+                  "const pick = list.find((a) => a.scope_type === 'CORE') || list[0];",
+                  "if (pick) {",
+                  "  pm.collectionVariables.set('role_id', pick.role_id);",
+                  "  pm.collectionVariables.set('scope_type', pick.scope_type);",
+                  "  pm.collectionVariables.set('scope_id_json', pick.scope_id ? JSON.stringify(pick.scope_id) : 'null');",
+                  "}",
+                  "if (b.active_scope && b.token) { pm.collectionVariables.set('access_token', b.token); pm.globals.set('access_token', b.token); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/portal/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{its_id}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Same handler as POST /login (the portal page uses this path). Use instead of POST /login: run Portal page first, since a transaction signs in only once."
+          }
+        },
+        {
+          "name": "POST /portal/select-scope (alias of POST /select-scope)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.token) { pm.collectionVariables.set('access_token', b.token); }",
+                  "if (b.token) { pm.globals.set('access_token', b.token); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "url": "{{identity}}/portal/select-scope",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{transaction_id}}\",\n  \"role_id\": \"{{role_id}}\",\n  \"scope_type\": \"{{scope_type}}\",\n  \"scope_id\": {{scope_id_json}},\n  \"audience\": \"authorization\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Same handler as POST /select-scope; also Switch Workspace from the portal page."
+          }
         }
       ]
     },
@@ -356,7 +469,8 @@
                   "if (pm.response.code >= 400) console.log(pm.response.text());",
                   "const b = pm.response.code < 400 ? pm.response.json() : {};",
                   "if (b.transaction_id) { pm.collectionVariables.set('embed_transaction_id', b.transaction_id); }",
-                  "if (b.login_url) { pm.collectionVariables.set('login_url', b.login_url); }"
+                  "if (b.login_url) { pm.collectionVariables.set('login_url', b.login_url); }",
+                  "if (b.csrf) { pm.collectionVariables.set('embed_csrf', b.csrf); }"
                 ]
               }
             }
@@ -379,11 +493,32 @@
                 }
               }
             },
-            "description": "403 ORIGIN_NOT_ALLOWED: add the origin to the client and refresh. 403 CLIENT_NOT_ACTIVE: activate the client."
+            "description": "Fresh client configuration: origin is one of the registered origins (required when the client has several). Saves transaction_id, login_url and csrf (returned outside production). 403 ORIGIN_NOT_ALLOWED: add the origin to the client. 403 CLIENT_NOT_ACTIVE: activate the client."
           }
         },
         {
-          "name": "Embedded login page (saves embed_csrf)",
+          "name": "Transaction status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{identity}}/auth/transaction/{{embed_transaction_id}}?client_id={{client_id}}",
+            "description": "PENDING or COMPLETED, bound target_origin and expires_in. Never returns the CSRF token."
+          }
+        },
+        {
+          "name": "Embedded login page (optional: saves embed_csrf from HTML)",
           "event": [
             {
               "listen": "test",
@@ -412,11 +547,11 @@
               }
             ],
             "url": "{{login_url}}",
-            "description": "The iframe page. Its boot JSON carries the CSRF token for this transaction."
+            "description": "The iframe page. Only needed when TRANSACTION_API_RETURNS_CSRF is off (production): its boot JSON carries the CSRF token."
           }
         },
         {
-          "name": "Authenticate (POST /embed/login)",
+          "name": "Authenticate (POST /embed/login, saves core_assertion + sid)",
           "event": [
             {
               "listen": "test",
@@ -424,7 +559,17 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
-                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.core_assertion) { pm.collectionVariables.set('core_assertion', b.core_assertion); }",
+                  "if (b.core_assertion) {",
+                  "  const CryptoJS = require('crypto-js');",
+                  "  const part = b.core_assertion.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  const claims = JSON.parse(CryptoJS.enc.Base64.parse(part + '='.repeat((4 - (part.length % 4)) % 4)).toString(CryptoJS.enc.Utf8));",
+                  "  pm.collectionVariables.set('sid', claims.sid);",
+                  "  pm.test('assertion is for this client', () => pm.expect(claims.aud).to.eql(pm.collectionVariables.get('client_id')));",
+                  "  console.log('core_assertion claims', claims);",
+                  "}"
                 ]
               }
             }
@@ -455,7 +600,7 @@
                 }
               }
             },
-            "description": "Returns MIQAAT_AUTH_SUCCESS with core_assertion (RS256, 60 s, single use) and sets federation_session."
+            "description": "Returns MIQAAT_AUTH_SUCCESS with core_assertion (RS256, 60 s, single use) and sets federation_session. The test script saves core_assertion and its sid claim and logs the decoded claims to the Postman console."
           }
         },
         {
@@ -801,6 +946,323 @@
               ]
             },
             "description": "Reference only: a real browser sends it as a top-level form with the federation cookie. 303 to the registered post-logout URI."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Business unit app (RMS reference, :4001)",
+      "description": "The complete embedded login as an application performs it: start in RMS, sign in on Identity, hand the assertion to the RMS backend, then use the app. Postman keeps the rms_login_txn and rms_session cookies for localhost:4001. Needs a user with an RMS role (e.g. 30337752); otherwise the callback returns 403 ACCESS_DENIED:APPLICATION_ACCESS_DENIED.",
+      "item": [
+        {
+          "name": "RMS: start login (saves transaction, state, login_url)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.transaction_id) { pm.collectionVariables.set('embed_transaction_id', b.transaction_id); }",
+                  "if (b.state) { pm.collectionVariables.set('bu_state', b.state); }",
+                  "if (b.login_url) { pm.collectionVariables.set('login_url', b.login_url); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{rms}}"
+              }
+            ],
+            "url": "{{rms}}/auth/core/start",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"display\": \"embed\",\n  \"prompt\": \"login\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The transaction is bound to the Origin header (any origin registered for rms-web-dev) and to this cookie jar (rms_login_txn)."
+          }
+        },
+        {
+          "name": "Identity: login page for RMS (saves embed_csrf)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const m = pm.response.text().match(/id=\"miqaat-boot\"[^>]*>([\\s\\S]*?)<\\/script>/);",
+                  "pm.test('login page boot JSON found', () => pm.expect(m, 'no boot JSON: read the HTML error page in the response').to.not.equal(null));",
+                  "if (m) {",
+                  "  const boot = JSON.parse(m[1]);",
+                  "  pm.collectionVariables.set('embed_transaction_id', boot.transaction_id);",
+                  "  pm.collectionVariables.set('embed_csrf', boot.csrf);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              }
+            ],
+            "url": "{{login_url}}",
+            "description": "Creates the Identity transaction for the id RMS generated and embeds its CSRF token."
+          }
+        },
+        {
+          "name": "Identity: sign in for RMS (saves core_assertion + sid)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "if (b.core_assertion) { pm.collectionVariables.set('core_assertion', b.core_assertion); }",
+                  "if (b.core_assertion) {",
+                  "  const CryptoJS = require('crypto-js');",
+                  "  const part = b.core_assertion.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  const claims = JSON.parse(CryptoJS.enc.Base64.parse(part + '='.repeat((4 - (part.length % 4)) % 4)).toString(CryptoJS.enc.Utf8));",
+                  "  pm.collectionVariables.set('sid', claims.sid);",
+                  "  pm.test('assertion is for this client', () => pm.expect(claims.aud).to.eql(pm.collectionVariables.get('client_id')));",
+                  "  console.log('core_assertion claims', claims);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{identity}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{embed_csrf}}"
+              }
+            ],
+            "url": "{{identity}}/embed/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{embed_transaction_id}}\",\n  \"client_id\": \"{{client_id}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{its_id}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "client_id must be rms-web-dev. Run the RMS callback within 60 s."
+          }
+        },
+        {
+          "name": "RMS: callback with core_assertion (sets encrypted rms_session)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{rms}}"
+              }
+            ],
+            "url": "{{rms}}/auth/core/callback",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{embed_transaction_id}}\",\n  \"state\": \"{{bu_state}}\",\n  \"core_assertion\": \"{{core_assertion}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Verifies the assertion (JWKS RS256, iss, aud, exp, txn, jti replay) and Authorization access, then sets rms_session: JWE (dir, A256GCM) with the verified claims and the core_assertion. LOGIN_TRANSACTION_MISMATCH: the rms_login_txn cookie was not sent (check Cookies → localhost)."
+          }
+        },
+        {
+          "name": "RMS: current user and assertion claims (GET /api/me)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());",
+                  "const b = pm.response.code < 400 ? pm.response.json() : {};",
+                  "pm.test('assertion claims from the session cookie', () => pm.expect(b.assertion && b.assertion.aud).to.eql(pm.collectionVariables.get('client_id')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rms}}/api/me",
+            "description": "assertion = claims decrypted from rms_session; session.expires_at = SESSION_TTL_SECONDS. The raw core_assertion is never returned."
+          }
+        },
+        {
+          "name": "RMS: protected API (server-side permission check)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rms}}/api/demo/view",
+            "description": "Calls Authorization /authorization/check with the RMS service token. Try create, edit, delete: 403 with reason when the role lacks the permission."
+          }
+        },
+        {
+          "name": "RMS: sign out of RMS only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{rms}}"
+              }
+            ],
+            "url": "{{rms}}/auth/logout",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Deletes the Redis session; the same rms_session cookie then gets 401 on /api/me. The federation session stays."
+          }
+        },
+        {
+          "name": "RMS: prepare sign out everywhere",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{rms}}"
+              }
+            ],
+            "url": "{{rms}}/auth/logout/federated",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Ends the RMS session and returns the form (client_id, logout_hint = sid, post_logout_redirect_uri, state) the browser posts top-level to Identity /federation/logout."
+          }
+        },
+        {
+          "name": "RMS: service key JWKS (public)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP ' + pm.response.code, () => pm.expect(pm.response.code).to.be.below(400));",
+                  "if (pm.response.code >= 400) console.log(pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{rms}}/.well-known/jwks.json",
+            "description": "Public key the Authorization service uses to verify the RMS backend service tokens."
           }
         }
       ]

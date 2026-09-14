@@ -302,7 +302,9 @@ Audit events: `CLIENT_ORIGIN_ADDED` and `CLIENT_ORIGIN_REMOVED`, with actor `use
 
 ### 4.3 Apply the change in Identity immediately
 
-Identity uses the cached configuration for up to `CLIENT_CACHE_TTL_SECONDS`. To apply an origin, callback or status change at once:
+Creating a transaction, opening the login page and signing in always read the client's configuration fresh from the Authorization
+service, so an origin, callback or status change applies to the next sign-in without any extra call. Other lookups (portal launcher,
+logout) use a cache of `CLIENT_CACHE_TTL_SECONDS`; to refresh that cache at once as well:
 
 ```http
 POST http://localhost:3001/federation/clients/rms-web-dev/refresh
@@ -428,7 +430,8 @@ Content-Type: application/json
 }
 ```
 
-A backend may instead pre-create the transaction on Identity:
+A backend (or any API client) may instead create the transaction on Identity. Everything is derived from the client's
+**current** configuration in the Authorization service, read fresh on every call, so an origin added or removed there applies to the next transaction:
 ```http
 POST http://localhost:3001/auth/transaction
 Content-Type: application/json
@@ -436,10 +439,33 @@ Content-Type: application/json
 { "client_id": "rms-web-dev", "state": "postman-state-abcdefghijs5555", "origin": "http://localhost:4001", "display": "embed" }
 ```
 ```json
-201 { "transaction_id": "txn_gkCaRfNrl4_CaYPu6lMIX6ee", "expires_at": "2026-09-13T11:21:32.583Z",
-      "login_url": "http://localhost:3001/embed/login?client_id=rms-web-dev&transaction_id=txn_gkCa…&state=postman-state-abcdefghijs5555&display=embed&origin=http%3A%2F%2Flocalhost%3A4001" }
+201 {
+  "transaction_id": "txn_gkCaRfNrl4_CaYPu6lMIX6ee", "client_id": "rms-web-dev", "display": "embed",
+  "state": "postman-state-abcdefghijs5555", "status": "PENDING",
+  "target_origin": "http://localhost:4001", "callback_uri": null,
+  "expires_at": "2026-09-14T11:21:32.583Z", "expires_in": 300,
+  "login_url": "http://localhost:3001/embed/login?client_id=rms-web-dev&transaction_id=txn_gkCa…&state=postman-state-abcdefghijs5555&display=embed&origin=http%3A%2F%2Flocalhost%3A4001",
+  "csrf": "<csrf>", "csrf_header": "x-csrf-token", "required_origin": "http://localhost:3001"
+}
 ```
-If `origin` isn't registered for the client, the response is `403 ORIGIN_NOT_ALLOWED` (see [4.2](#42-add-list-and-remove-embed-origins)).
+
+| Field | Rule |
+|---|---|
+| `origin` | the parent page's exact origin. A client may register **several** origins; send the one the page is served from and the transaction is bound to it (`target_origin`, CSP `frame-ancestors`, `postMessage` target). It may be omitted only when exactly one origin is registered. Not registered (or removed) → `403 ORIGIN_NOT_ALLOWED` |
+| `display` | `embed` (default) or `page` (top level; `redirect_uri` selects one of the registered callbacks, returned as `callback_uri`) |
+| `csrf`, `csrf_header`, `required_origin` | the token the login page embeds for this transaction, so API clients can call `POST /embed/login` / `/embed/continue` without parsing HTML. Returned when `TRANSACTION_API_RETURNS_CSRF` is true (default outside production; off in production unless set). The `Origin` check still applies, and a browser can only send `Origin: http://localhost:3001` from the Identity page |
+| `expires_in` | `TRANSACTION_TTL_SECONDS`; the transaction is single use |
+| client state | `403 CLIENT_NOT_ACTIVE` (not ACTIVE), `403 AUTHENTICATION_MODE_NOT_ALLOWED` (`embed` on a REDIRECT client), `400 CALLBACK_NOT_ALLOWED` |
+
+Check a transaction (the CSRF token and `state` are never returned here):
+```http
+GET http://localhost:3001/auth/transaction/txn_gkCaRfNrl4_CaYPu6lMIX6ee?client_id=rms-web-dev
+```
+```json
+200 { "transaction_id": "txn_gkCa…", "client_id": "rms-web-dev", "display": "embed", "status": "PENDING",
+      "target_origin": "http://localhost:4001", "expires_at": "…", "expires_in": 241 }
+```
+`status` becomes `COMPLETED` once an assertion was issued. Unknown, expired or another client's transaction returns `400 TRANSACTION_INVALID`.
 
 ### Step 2: the iframe loads the login page
 
@@ -552,6 +578,40 @@ The backend must check **all** of the following, in order (reference: `examples/
 | 12 | create the local session (store `sid` for back-channel logout) | — |
 
 The assertion carries identity only. Never read roles or permissions from it.
+
+### 6.1 The application's session cookie (encrypted)
+
+The assertion itself is useless after step 12: it expires within 60 s, its `jti` is already spent and its `txn` is deleted. So the
+reference app copies the **verified** claims into its own session cookie (`rms_session`, `ams_session`, …), encrypted with the
+application's own key. Every value is taken at runtime from the verified assertion and that application's env file; nothing is fixed in code.
+
+| Part | Value |
+|---|---|
+| Format | JWE compact, `alg: dir`, `enc: A256GCM`, `typ: session+jwt`, `kid` = fingerprint of the key |
+| `core` | the verified assertion claims as issued: `iss`, `sub`, `aud`, `sid`, `jti`, `txn`, `auth_time`, `iat`, `exp` |
+| `core_assertion` | the verified compact RS256 assertion, unchanged (about 1 KB; the sealed cookie stays under 4 KB and sealing fails loudly if it would not). It is already expired and its `jti` is spent, so it is kept for traceability only and is never accepted again |
+| `lid` | id of the Redis session `bu:<client_id>:session:<lid>`, used as the revocation list |
+| outer `iss` / `aud` | that application's `APP_ORIGIN` / `CLIENT_ID`, so an RMS cookie is refused by AMS |
+| outer `exp` and cookie `Max-Age` | `SESSION_TTL_SECONDS` (default 28800), not the assertion's 60 s |
+| Cookie flags | HttpOnly, Secure, SameSite=Lax, Path=/ |
+| Key | `SESSION_ENC_KEY`: 32 random bytes, base64url, from the application's own secret store (required when `NODE_ENV=production`). In development it is generated once into `examples/bu-reference-app/.keys/<client_id>-session.key` (git-ignored), or `SESSION_KEY_FILE` |
+
+On every request the backend decrypts the cookie (authentication tag, `iss`, `aud`, `exp`) and then requires the Redis session
+`lid` to still exist with the same `sid`. Local logout and back-channel logout delete that Redis session, so a copied cookie stops
+working at once even though it is still in the browser. `GET /api/me` returns the claims as `assertion` and the cookie expiry as
+`session.expires_at`:
+
+```json
+{ "its_id": "30337752", "sid": "sid_-IajPVFnfiF9ZfIAkzk9KVTU", "client_id": "rms-web-dev",
+  "assertion": { "iss": "http://localhost:3001", "sub": "30337752", "aud": "rms-web-dev", "sid": "sid_-IajPVFnfiF9ZfIAkzk9KVTU",
+                 "jti": "ca19907b-…", "txn": "txn_C6BfjesJxPz4wcQa5E5vonw6", "auth_time": 1789297102, "iat": 1789297102, "exp": 1789297162 },
+  "session": { "expires_at": "2026-09-14T19:38:22.000Z" }, "effective": { … } }
+```
+
+Production key: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. Changing the key ends every session
+of that application; users get back in through SSO without a password while their federation session is alive.
+The Identity signing key is never put in the cookie, and `GET /api/me` returns only the decoded claims, not the raw
+`core_assertion`, so page scripts never see the token.
 
 ---
 
@@ -728,7 +788,8 @@ Unversioned paths are the published contract; `/v1/<path>` is identical. Swagger
 | GET | `/.well-known/jwks.json` | anyone | public signing keys |
 | GET | `/.well-known/miqaat-federation` | anyone | issuer metadata (endpoints, algorithms) |
 | GET | `/auth/client/:clientId` | BU frontend | public display info for a client |
-| POST | `/auth/transaction` | BU backend | pre-create a login transaction (validates client, mode, origin, callback) |
+| POST | `/auth/transaction` | BU backend / API client | create a login transaction from fresh client configuration: `login_url`, bound `target_origin` (one of several registered), expiry, CSRF token (configurable) |
+| GET | `/auth/transaction/:transactionId?client_id=` | BU backend / API client | transaction status (`PENDING` / `COMPLETED`), bound origin, remaining lifetime; never the CSRF token |
 | GET | `/embed/login` | iframe / top level | login page |
 | POST | `/embed/login` | login page (same origin + CSRF) | authenticate, returns the assertion delivery |
 | POST | `/embed/continue` | login page | SSO with an existing federation session |
@@ -750,7 +811,7 @@ are documented in `../core-authorization/README.md` and in sections [4](#4-onboa
 
 | Collection | Before running | Variables filled by its scripts |
 |---|---|---|
-| Identity: `postman/miqaat-federation.postman_collection.json` | set `password` as a *current* value (never exported) | `transaction_id`, `csrf`, `role_id`, `scope_type`, `scope_id_json`, `access_token`, `admin_identity_access_token`, `login_url`, `embed_transaction_id`, `embed_csrf`; globals `access_token` and `identity_access_token` |
+| Identity: `postman/miqaat-federation.postman_collection.json` | set `password` as a *current* value (never exported) | `transaction_id`, `csrf`, `role_id`, `scope_type`, `scope_id_json`, `access_token`, `admin_identity_access_token`, `login_url`, `embed_transaction_id`, `embed_csrf`, `core_assertion`, `sid`, `bu_state`; globals `access_token` and `identity_access_token` |
 | Authorization: `../core-authorization/postman/miqaat-authorization.postman_collection.json` | sign in with the Identity collection first | uses the globals; stores `tenant_id`, `bu_id`, `utility_id`, `role_id`, `client_id` |
 
 Run order for onboarding an application end to end:
@@ -758,7 +819,10 @@ Run order for onboarding an application end to end:
 1. Identity → **1. Sign in**: Portal page → POST /login → select-scope (authorization) → select-scope (identity).
 2. Authorization → **Organisation** → **Applications** → **Roles & permissions** → **Clients** (create, origins, callbacks, SECURITY_REVIEW,
    ACTIVE, Apply in Identity) → **Users & assignments**.
-3. Identity → **3. Embedded login**: Create transaction → Embedded login page → Authenticate.
+3. Identity → **3. Embedded login**: Create transaction (returns the CSRF token) → Transaction status → Authenticate (saves `core_assertion`
+   and `sid`, and logs the decoded claims in the Postman console).
+4. Identity → **5. Business unit app (RMS reference, :4001)**: RMS start → Identity login page → Identity sign in → RMS callback →
+   `GET /api/me` shows the claims stored in the encrypted `rms_session` cookie. Needs a user with an RMS role (e.g. 30337752).
 
 Access tokens last 10 minutes: re-run the two select-scope requests when a call returns `401`. Every request logs the error body
 to the Postman console when it fails.
@@ -805,7 +869,8 @@ Every error body is `{ "error": "<CODE>", "message": "…", "correlation_id": "�
 | `REDIS_URL` | — | sessions, transactions, rate limits, replay |
 | `AUTHZ_BASE_URL`, `AUTHZ_AUDIENCE` | —, `miqaat-core-authorization` | Authorization service |
 | `SERVICE_PRINCIPAL_ID`, `SERVICE_TOKEN_TTL_SECONDS` | `identity-federation`, 120 | service tokens to Authorization |
-| `CLIENT_CACHE_TTL_SECONDS` | 30 | client config cache; `0` disables it; see `/federation/clients/:id/refresh` |
+| `CLIENT_CACHE_TTL_SECONDS` | 30 | client config cache for portal and logout lookups; transaction creation, the login page and sign-in always read fresh; `0` disables it; see `/federation/clients/:id/refresh` |
+| `TRANSACTION_API_RETURNS_CSRF` | unset = `true` outside production, `false` in production | `POST /auth/transaction` also returns `csrf`, `csrf_header`, `required_origin` |
 | `SIGNING_KEY_PROVIDER` | `file` | `ssm` or `secretsmanager` (production requires one of them) |
 | `SSM_SIGNING_KEYS_PATH` / `SECRETS_MANAGER_SIGNING_KEYS_SECRET_ID` | `/miqaat/identity/dev/signing-keys` | |
 | `SIGNING_KEYS_KMS_KEY_ID`, `AWS_REGION`, `AWS_PROFILE` | —, `ap-south-1` | `AWS_ENDPOINT_URL` only for LocalStack (rejected in production) |
@@ -854,7 +919,7 @@ Every error body is `{ "error": "<CODE>", "message": "…", "correlation_id": "�
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `403 ORIGIN_NOT_ALLOWED` on `/auth/transaction` or `/embed/login` | the `origin` (your app's page origin, e.g. `http://localhost:3000`) isn't in the client's `allowed_embed_origins` | `POST /clients/<id>/origins` (or `npm run client -- origins add <id> <origin>`), then `POST /federation/clients/<id>/refresh` or wait 30 s |
+| `403 ORIGIN_NOT_ALLOWED` on `/auth/transaction` or `/embed/login` | the `origin` (your app's page origin, e.g. `http://localhost:3000`) isn't in the client's `allowed_embed_origins` | `POST /clients/<id>/origins` (or `npm run client -- origins add <id> <origin>`), then start a new transaction (read fresh, no refresh needed). A client with several origins needs `origin` in every `/auth/transaction` request |
 | "Open this sign-in inside the application" | a `display=embed` login URL opened directly in a tab (`EMBED_CONTEXT_REQUIRED`) | click **Open &lt;application origin&gt;** on that page (it loads the same link inside the application, e.g. the playground on :3000), start from the application, or use `display=page` |
 | Error shown inside the login iframe: "already completed" / "expired" | the transaction was used or is older than 5 minutes; the parent receives `MIQAAT_AUTH_ERROR {error: "TRANSACTION_EXPIRED"}` | start a new transaction |
 | Login iframe is blank; console shows `frame-ancestors` | same as above, or the page is opened from an unregistered origin | register the exact origin, including the port |
