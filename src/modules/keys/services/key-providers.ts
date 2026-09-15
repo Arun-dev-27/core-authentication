@@ -6,6 +6,8 @@ import type { Env } from '@config/configuration';
 import { KeysetError, StoredSigningKey } from './keyset';
 
 export const SIGNING_KEY_PROVIDER = Symbol('SIGNING_KEY_PROVIDER');
+/** Largest value of an SSM Standard-tier parameter (Advanced tier is not used). */
+export const SSM_STANDARD_MAX_BYTES = 4096;
 
 /**
  * Source of the RS256 keyset. Private keys live ONLY in the provider (AWS Secrets Manager / SSM in
@@ -132,14 +134,19 @@ export class SsmKeyProvider implements SigningKeyProvider {
 
   async save(keys: StoredSigningKey[]): Promise<void> {
     for (const key of keys) {
+      const value = JSON.stringify(key);
+      // Standard tier only (no Advanced-tier charges): values up to 4 KB. A 4096-bit key with every timestamp is ~3.6 KB.
+      if (Buffer.byteLength(value) > SSM_STANDARD_MAX_BYTES) {
+        throw new KeysetError(`key ${key.kid} is ${Buffer.byteLength(value)} bytes; SSM Standard parameters hold at most ${SSM_STANDARD_MAX_BYTES}`);
+      }
       await this.client.send(
         new PutParameterCommand({
           Name: `${this.path}/${key.kid}`,
-          Value: JSON.stringify(key),
+          Value: value,
           Type: ParameterType.SECURE_STRING,
           KeyId: this.kmsKeyId,
           Overwrite: true,
-          Tier: 'Advanced',
+          Tier: 'Standard',
           Description: `Miqaat Identity Federation RS256 signing key (${key.status})`,
         }),
       );

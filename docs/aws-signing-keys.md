@@ -96,6 +96,7 @@ assertion verification).
 
 ## SSM Parameter Store (alternative)
 
-`SIGNING_KEY_PROVIDER=ssm`, `SSM_SIGNING_KEYS_PATH=/miqaat/identity/prod/signing-keys` — one SecureString (Advanced tier,
-CMK) per key at `<path>/<kid>`. Runtime IAM: `ssm:GetParametersByPath` on the path + `kms:Decrypt`; rotation adds
+`SIGNING_KEY_PROVIDER=ssm`, `SSM_SIGNING_KEYS_PATH=/miqaat/identity/prod/signing-keys` — one SecureString (Standard tier,
+CMK) per key at `<path>/<kid>`. Standard tier only: a value holds at most 4 KB (a 3072-bit key is ~2.8 KB, 4096-bit ~3.6 KB; the
+provider refuses anything larger). AWS cannot downgrade an existing Advanced parameter: delete it and save the keyset again. Runtime IAM: `ssm:GetParametersByPath` on the path + `kms:Decrypt`; rotation adds
 `ssm:PutParameter`.
