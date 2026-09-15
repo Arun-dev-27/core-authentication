@@ -19,3 +19,4 @@ examples/bu-reference-app/.env
 
 # reference BU service-principal keys (dev only)
 examples/bu-reference-app/.keys/
+examples/login-page/.keys/

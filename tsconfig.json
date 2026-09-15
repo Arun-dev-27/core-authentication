@@ -32,6 +32,6 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts", "examples/bu-reference-app/src/**/*.ts"],
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts", "examples/bu-reference-app/src/**/*.ts", "examples/login-page/**/*.ts"],
   "exclude": ["node_modules", "dist", "examples/bu-reference-app/node_modules"]
 }

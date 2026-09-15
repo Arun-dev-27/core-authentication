@@ -21,6 +21,7 @@
     "seed:dev-users": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/seed-dev-users.ts",
     "openapi:export": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/export-openapi.ts",
     "smoke:federation": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/federation-smoke.ts",
+    "test:jwks": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/jwks-verification.ts",
     "test": "node node_modules/jest/bin/jest.js",
     "test:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config test/jest-e2e.json --runInBand --forceExit",
     "test:all": "npm run test && npm run test:e2e",
@@ -31,7 +32,8 @@
     "infra:up": "docker compose -f docker/docker-compose.yml --env-file .env up -d",
     "infra:down": "docker compose -f docker/docker-compose.yml --env-file .env down",
     "docker:build": "docker build -f docker/Dockerfile -t miqaat-identity-federation-service:local .",
-    "example:playground": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/embed-playground/server.ts"
+    "example:playground": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/embed-playground/server.ts",
+    "example:login": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/login-page/server.ts"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1131.0",
