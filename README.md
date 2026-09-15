@@ -149,6 +149,7 @@ cd ../core-authorization && npm run seed:access
 npm run example:rms   # :4001
 npm run example:ams   # :4002
 npm run example:vms   # :4003
+npm run example:login # :3100  separate login page (authentication + authorization JWKS)
 ```
 
 Open http://localhost:4001 and sign in inside the iframe. Then open AMS and VMS; they sign you in with SSO and no password.
@@ -159,6 +160,7 @@ The Core Portal is at http://localhost:3001/portal.
 | Way | How | What you see |
 |---|---|---|
 | **Playground (your own app on :3000)** | `npm run example:playground`, open http://localhost:3000, click **Start embedded login**, sign in inside the iframe | every step on one page: transaction, postMessage, each JWKS check, claims, Authorization decision |
+| **Separate login page (:3100)** | `npm run example:login`, open http://localhost:3100 | the two checks side by side: `core_assertion` verified with the **Identity JWKS**, `authorization_token` verified with the **Authorization JWKS**; session, sign out everywhere, administrator force logout. See `../README.md` |
 | **Reference apps** | `npm run example:rms` (and ams / vms), open http://localhost:4001 | real BU integration: local session, protected API buttons, SSO into :4002 / :4003, federation logout |
 | **Postman** | import `postman/miqaat-federation.postman_collection.json`, set `password` as a current value, run **1. Sign in** and then **3. Embedded login** top to bottom | scripts copy `transaction_id`, `csrf`, `role_id`, tokens and `login_url` into variables; raw JSON and the `core_assertion` (see [11.1](#111-postman-collections)) |
 | **Automated** | `npm run smoke:federation` · `npm run test:browser` | full HTTP and real-Chromium runs |
@@ -236,12 +238,12 @@ Content-Type: application/json
 
 { "transaction_id": "<from GET /portal>", "its_id": "30337752", "password": "********" }
 ```
-Pick the CORE assignment from `assignments`, then:
+Pick the CORE role from `session.roles` (its `role_id`, `scope_type`, `scope_id`), then:
 ```http
 POST http://localhost:3001/select-scope
 { "transaction_id": "…", "role_id": "<Platform Administrator role_id>", "scope_type": "CORE", "scope_id": null, "audience": "authorization" }
 ```
-`token` is the bearer for the Authorization API. Repeat with `"audience": "identity"` for the Identity refresh endpoint.
+`session.token` is the bearer for the Authorization API. Repeat with `"audience": "identity"` for the Identity refresh endpoint.
 
 ### 4.2 Add, list and remove embed origins
 
@@ -493,23 +495,37 @@ Content-Type: application/json
 
 { "transaction_id": "txn_C6Bf…", "client_id": "rms-web-dev", "identity_type": "ITS", "its_id": "30337752", "password": "********" }
 ```
-Success:
+Success uses the same login envelope as the Core Portal (section 8). `session.token` is the one-time `core_assertion`
+(`token_type: "CoreAssertion"`, `audience` = the client, `expires_in` = `ASSERTION_TTL_SECONDS`) and `session.delivery` says how
+the login page hands it over. `role_type`, `roles`, `active_role`, `modules` and `permissions` describe the user's Core roles for display;
+they are never added to the assertion or to the postMessage:
 ```json
 200  Set-Cookie: federation_session=…; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=1800
 {
-  "type": "MIQAAT_AUTH_SUCCESS",
-  "transaction_id": "txn_C6Bf…",
-  "state": "gMex8…",
-  "core_assertion": "eyJhbGciOiJSUzI1NiIs…",
-  "delivery": "post_message",
-  "target_origin": "http://localhost:4001"
+  "success": true,
+  "session": {
+    "token": "eyJhbGciOiJSUzI1NiIs… (core_assertion)", "token_type": "CoreAssertion", "expires_in": 60, "audience": "rms-web-dev",
+    "user": { "id": "30337752", "its_id": "30337752", "name": "…", "status": "ACTIVE" },
+    "role_type": "MULTI",
+    "active_role": null,
+    "roles": [
+      { "role_id": "…", "role_name": "Platform Administrator", "level": "CORE_ADMIN", "tenant_id": "CORE", "tenant_name": "Core", "scope_type": "CORE", "scope_id": null },
+      { "role_id": "…", "role_name": "RMS Registration Admin", "level": "BUSINESS_UNIT_ADMIN", "tenant_id": "…", "tenant_name": "RMS", "scope_type": "BUSINESS_UNIT", "scope_id": "…" }
+    ],
+    "modules": [], "permissions": {}, "onboarding_required": false,
+    "delivery": { "type": "MIQAAT_AUTH_SUCCESS", "transaction_id": "txn_C6Bf…", "state": "gMex8…", "delivery": "post_message", "target_origin": "http://localhost:4001" }
+  },
+  "request_id": "req-…", "timestamp": "2026-09-15T11:42:07.512Z", "scope": null, "error": null
 }
 ```
+With exactly one role, `role_type` is `SINGLE` and `active_role`, `modules`, `permissions` and `scope` are filled in, as in the portal.
 Failure:
 ```json
-401 { "error": "INVALID_CREDENTIALS", "message": "Invalid ITS ID or password", "correlation_id": "a7319ac1-…" }
+401 { "success": false, "session": null, "request_id": "req-…", "timestamp": "…", "scope": null,
+      "error": { "code": "INVALID_CREDENTIALS", "message": "Invalid ITS ID or password" } }
 ```
-Non-ITS members send `"identity_type": "NON_ITS", "identifier": "<email or username>"`. SSO with an existing session: `POST /embed/continue { transaction_id, client_id }`.
+The sign-in page (embedded login and Core Portal) offers **ITS ID + password only**. The API itself is unchanged and still accepts
+`"identity_type": "NON_ITS", "identifier": "<email or username>"`. SSO with an existing session: `POST /embed/continue { transaction_id, client_id }` (same envelope).
 
 ### Step 4: postMessage to the parent
 
@@ -678,7 +694,8 @@ Authorization: Bearer <new service token>
    2. The user exists and is active.
    3. The user has an assignment whose scope covers the application owner: CORE covers everything, a BU covers itself and its utilities, a utility covers itself.
    4. The role's permissions include the requested code in this application's modules; otherwise `PERMISSION_DENIED` or `MODULE_MISMATCH`.
-3. **Caching:** results are cached per `(its_id, client_id)` and invalidated immediately on any RBAC or client change.
+3. **Caching:** results are cached per `(its_id, client_id)` and invalidated immediately on any RBAC or client change. If Redis
+   refuses the invalidation, the admin write returns `503 CACHE_INVALIDATION_FAILED` (change saved; cached results expire within 60 s).
 
 The business API in the reference app enforces it per request:
 ```http
@@ -698,28 +715,83 @@ scopes (CORE, BUSINESS_UNIT, UTILITY); each role × scope is a **workspace**.
 POST http://localhost:3001/login        (same as /portal/login; needs Origin + X-CSRF-Token from GET /portal)
 { "transaction_id": "…", "its_id": "31267890", "password": "********" }
 ```
+Every response of `/login`, `/portal/login`, `/select-scope` and `/portal/select-scope` uses one envelope.
+A user with **several roles** (`role_type: "MULTI"`) gets every role in `session.roles` and no active role yet:
 ```json
 200 {
-  "its_id": "31267890", "name": "Murtaza Saifuddin",
-  "token": "eyJ… (unscoped at+jwt)", "token_type": "Bearer", "expires_in": 600, "active_scope": null,
-  "requires_scope_selection": true,
-  "assignments": [
-    { "role_id": "…", "role_name": "Business Unit Admin", "scope_type": "BUSINESS_UNIT", "scope_id": "…", "scope_name": "RMS" },
-    { "role_id": "…", "role_name": "Utility Admin", "scope_type": "UTILITY", "scope_id": "…", "scope_name": "Helpdesk" },
-    { "role_id": "…", "role_name": "Utility Admin", "scope_type": "UTILITY", "scope_id": "…", "scope_name": "Zone Support" }
-  ]
+  "success": true,
+  "session": {
+    "token": "eyJ… (unscoped at+jwt)", "token_type": "Bearer", "expires_in": 600, "audience": "miqaat-core-authorization",
+    "user": { "id": "31267890", "its_id": "31267890", "name": "Murtaza Saifuddin", "status": "ACTIVE" },
+    "role_type": "MULTI",
+    "active_role": null,
+    "roles": [
+      { "role_id": "…", "role_name": "Business Unit Admin", "level": "BUSINESS_UNIT_ADMIN", "tenant_id": "…", "tenant_name": "RMS", "scope_type": "BUSINESS_UNIT", "scope_id": "…" },
+      { "role_id": "…", "role_name": "Utility Admin", "level": "UTILITY_ADMIN", "tenant_id": "…", "tenant_name": "Helpdesk", "scope_type": "UTILITY", "scope_id": "…" },
+      { "role_id": "…", "role_name": "Utility Admin", "level": "UTILITY_ADMIN", "tenant_id": "…", "tenant_name": "Zone Support", "scope_type": "UTILITY", "scope_id": "…" }
+    ],
+    "modules": [],
+    "permissions": {},
+    "onboarding_required": false
+  },
+  "request_id": "req-…", "timestamp": "2026-09-15T11:42:07.512Z", "scope": null, "error": null
 }
 ```
-With exactly one assignment, it is activated automatically: `active_scope` and a scoped `token` are returned directly.
+A user with **one role** (`role_type: "SINGLE"`) is activated at once — `active_role`, `modules`, `permissions`, a scoped token and `scope` are filled in:
+```json
+200 {
+  "success": true,
+  "session": {
+    "token": "eyJ… (at+jwt with role_id, scope_type, scope_id)", "token_type": "Bearer", "expires_in": 600, "audience": "miqaat-core-authorization",
+    "user": { "id": "30416234", "its_id": "30416234", "name": "Ali Hakim", "status": "ACTIVE" },
+    "role_type": "SINGLE",
+    "active_role": { "role_id": "…", "role_name": "Platform Administrator", "level": "CORE_ADMIN", "tenant_id": "CORE", "tenant_name": "Core", "scope_type": "CORE", "scope_id": null },
+    "roles": [ { "role_id": "…", "role_name": "Platform Administrator", "level": "CORE_ADMIN", "tenant_id": "CORE", "tenant_name": "Core", "scope_type": "CORE", "scope_id": null } ],
+    "modules": ["dashboard", "business-unit-management", "utility-management", "role-management", "user-management", "configuration"],
+    "permissions": {
+      "dashboard": { "create": false, "read": true, "update": false, "delete": false, "approve": false, "export": false },
+      "role-management": { "create": true, "read": true, "update": true, "delete": false, "approve": false, "export": false }
+    },
+    "onboarding_required": false
+  },
+  "request_id": "req-…", "timestamp": "2026-09-15T11:42:07.512Z", "scope": "PLATFORM", "error": null
+}
+```
+
+| Field | Value |
+|---|---|
+| `session.role_type` | `SINGLE` (one role, already active) · `MULTI` (several roles, choose with `/select-scope`) · `NONE` (no role assigned) |
+| `session.roles[]` | every role the user holds; send its `role_id`, `scope_type`, `scope_id` to `/select-scope` |
+| `level` | `CORE_ADMIN` · `BUSINESS_UNIT_ADMIN` · `UTILITY_ADMIN` (from the role's scope) |
+| `tenant_id` / `tenant_name` | `"CORE"` / `"Core"` for a Core role, otherwise the business unit or utility id and name |
+| `modules` | slugs of the modules the active role holds at least one action on (`BUSINESS_UNIT_MGMT` → `business-unit-management`) |
+| `permissions` | per module `create`, `read` (view), `update` (edit), `delete`, `approve`, `export` |
+| `scope` | `PLATFORM` (Core role), `BUSINESS_UNIT`, `UTILITY`; `null` until a role is active |
+| `user.id` | the ITS ID (the account key) |
+| `request_id` | the request's correlation id (also in the logs) |
+| `onboarding_required` | always `false` in this service |
+
+Errors on these endpoints use the same envelope and the usual HTTP status:
+```json
+401 { "success": false, "session": null, "request_id": "req-…", "timestamp": "…", "scope": null,
+      "error": { "code": "INVALID_CREDENTIALS", "message": "Invalid ITS ID or password" } }
+```
 
 ```http
 POST http://localhost:3001/select-scope    (same as /portal/select-scope; also "Switch Workspace")
 { "transaction_id": "…", "role_id": "…", "scope_type": "BUSINESS_UNIT", "scope_id": "…", "audience": "authorization" }
 ```
+The response is the same envelope for the chosen role: `session.active_role`, its `modules` and `permissions`, a token carrying
+only that role's scope, and `scope`. `role_type` and `roles` still describe every role the user holds.
 ```json
-200 { "active_scope": { "role_id": "…", "role_name": "Business Unit Admin", "scope_type": "BUSINESS_UNIT", "scope_id": "…", "scope_name": "RMS" },
-      "token": "eyJ… (at+jwt with role_id, scope_type, scope_id)", "token_type": "Bearer", "expires_in": 600,
-      "audience": "miqaat-core-authorization", "permissions": { "DASHBOARD": ["view"], "…": [] } }
+200 { "success": true,
+      "session": { "token": "eyJ… (at+jwt with role_id, scope_type, scope_id)", "token_type": "Bearer", "expires_in": 600, "audience": "miqaat-core-authorization",
+                   "user": { "id": "31267890", "its_id": "31267890", "name": "Murtaza Saifuddin", "status": "ACTIVE" },
+                   "role_type": "MULTI",
+                   "active_role": { "role_id": "…", "role_name": "Business Unit Admin", "level": "BUSINESS_UNIT_ADMIN", "tenant_id": "…", "tenant_name": "RMS", "scope_type": "BUSINESS_UNIT", "scope_id": "…" },
+                   "roles": [ … ], "modules": ["dashboard", "role-management", "…"], "permissions": { "dashboard": { "create": false, "read": true, "…": false } },
+                   "onboarding_required": false },
+      "request_id": "req-…", "timestamp": "…", "scope": "BUSINESS_UNIT", "error": null }
 ```
 A workspace that isn't assigned returns `403 SCOPE_NOT_ASSIGNED`. `"audience": "identity"` issues a token for Identity's admin endpoints.
 
@@ -764,7 +836,7 @@ no `nonce`) is verified by the BU through the JWKS, which then deletes local ses
 |---|---|---|---|
 | Identity signing key | one keyset for the federation | Identity's SSM path / secret only | `GET /.well-known/jwks.json` |
 | BU / utility backend service key | one per backend that calls Authorization | that backend's **own** secret store (e.g. `/miqaat/bu/rms/prod/service-key`) | the backend's `/.well-known/jwks.json`, registered as a service principal |
-| Authorization service | none (verify only) | — | — |
+| Authorization service signing key | one, signs `authorization_token` (`authz+jwt`) only | `AUTHZ_SIGNING_PRIVATE_KEY` from a secret store (dev: generated into `core-authorization/.keys/authorization-signing.pem`) | Authorization `GET /.well-known/jwks.json` (`kid` `authz-…`) |
 
 No business unit ever receives the Identity private key. A leaked BU key only lets someone act as that BU for its own clients, and the principal can be revoked.
 
@@ -826,6 +898,15 @@ Run order for onboarding an application end to end:
 
 Access tokens last 10 minutes: re-run the two select-scope requests when a call returns `401`. Every request logs the error body
 to the Postman console when it fails.
+
+**Saved examples.** Every request in both collections has saved example responses (request → *Examples*): Identity 107, Authorization
+204, covering success, errors and edge cases (CSRF missing / wrong / wrong Origin, expired or reused transaction, wrong password, 429 lock,
+role_type SINGLE / MULTI / NONE for portal and embedded login, select-scope switch, unregistered origin, SSO continue, every logout
+variant, RMS callback failures, permission denials, client lifecycle transitions, origin / callback add and remove rules). Each request
+description states its purpose, when to use it, what it needs and lists its saved responses; the collection description has the full
+index. Examples were captured from the running stack; CORE administrator successes were captured from the isolated test database;
+examples marked *(documented from the code, not captured)* need an administrator account or a failing dependency. Tokens, CSRF
+tokens, cookies and passwords are redacted.
 
 ---
 

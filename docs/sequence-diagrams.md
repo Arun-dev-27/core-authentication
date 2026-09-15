@@ -148,11 +148,12 @@ sequenceDiagram
   IF->>AZ: GET /internal/federation/users/{its_id}/assignments (service token)
   AZ-->>IF: [{role_id, role_name, scope_type, scope_id, scope_name}]
   IF->>IF: bind federation:txn:<id> to sid, TTL = session absolute lifetime (portal CSRF stays valid for this session only)
-  IF-->>U: {its_id, name, token (unscoped), requires_scope_selection, assignments}
-  U->>IF: POST /select-scope {role_id, scope_type, scope_id} (CSRF + Origin + session cookie; txn.sid must equal session sid)
+  IF-->>U: envelope {success, session: {token, role_type SINGLE|MULTI|NONE, roles[], active_role, modules, permissions}, scope}
+  Note over U,IF: SINGLE = the only role is activated at once (scoped token); MULTI / NONE = unscoped token, active_role null
+  U->>IF: POST /select-scope {role_id, scope_type, scope_id, audience} (CSRF + Origin + session cookie; txn.sid must equal session sid)
   IF->>AZ: POST /internal/federation/assignments/resolve
   AZ-->>IF: {active_scope, permissions} or 404
-  IF-->>U: {active_scope, token (role_id, scope_type, scope_id), permissions}
+  IF-->>U: envelope with session.active_role, modules, permissions, token (role_id, scope_type, scope_id)
   U->>AZ: GET /me/permissions (Bearer token)
   AZ->>AZ: verify via Identity JWKS, re-check assignment, resolve role_permissions
   AZ-->>U: {MODULE_CODE: [actions]}

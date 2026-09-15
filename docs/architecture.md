@@ -53,7 +53,7 @@ flowchart LR
 | Passwords / hashes | ✅ Authentication DB only | ❌ never | ❌ never sees them |
 | Login UI, CSRF, brute force | ✅ | | |
 | Central federation session (`federation_session`) | ✅ Redis + audit rows | | |
-| RS256 signing, JWKS, rotation | ✅ (private keys in Secrets Manager) | | verifies via JWKS |
+| RS256 signing, JWKS, rotation | ✅ (private keys in Secrets Manager) | ✅ own key for `authorization_token` only (no rotation yet) | verifies via both JWKS |
 | Client IDs, origins, callbacks, lifecycle | validates (reads) | ✅ owns (DB) | registers via onboarding |
 | Roles, permissions, app access | ❌ never in assertions | ✅ owns + decides | enforces server-side |
 | Local application session | | | ✅ owns |
@@ -65,10 +65,11 @@ flowchart LR
 * **Authentication DB** (`miqaat_auth`, separate PostgreSQL server/cluster): `users` (`its_id` PK, name, email, scrypt `password_hash`, status),
   `auth_mfa_factors`, `auth_sessions`, `auth_session_clients`, `auth_login_attempts`, `auth_audit_events`, `signing_key_metadata` (kid/status only).
   Every table has `created_at` and `updated_at` (trigger-maintained). Passwords exist only here.
-* **Authorization DB** (`miqaat_authz`, separate server/cluster): `business_units`, `utilities`, `environments`,
-  `applications`, `app_modules`, `permissions`, `roles`, `role_permissions`, `users`, `user_application_access`,
-  `user_roles`, `clients`, `client_origins`, `client_redirect_uris`, `client_status_history`, `service_principals` (public JWKS URIs only),
-  `authorization_audit_logs`.
+* **Authorization DB** (`miqaat_authz`, separate server/cluster): `tenants`, `business_units`, `utilities`, `environments`,
+  `applications`, `modules`, `permissions`, `roles`, `role_permissions`, `users`, `user_roles`, `clients`, `client_origins`,
+  `client_redirect_uris`, `client_status_history`, `service_principals` (public JWKS URIs only), `authorization_audit_logs`.
+  The additive `miqaat_core` schema (Core Admin Control Panel model, `core-authorization/docs/miqaat-core-schema.md`) lives in the
+  same database and is not read by any API yet.
 * The **ITS ID** is the only shared key. Profile data flows Identity → Authorization via `POST /users/sync`
   (whitelisted DTO; any credential field is rejected). An automated test asserts no `%pass%` column exists in the Authorization DB.
 
@@ -81,6 +82,8 @@ flowchart LR
 3. **BU backend → Authorization**: single-use RS256 service token signed with the BU's own key, verified against the BU's registered JWKS; scope `AUTHZ_CHECK`, own client IDs only.
 4. **Identity → Authorization**: service token signed with the federation key, verified with the Identity JWKS; scope `FEDERATION`.
 5. **Identity → BU backend**: back-channel logout tokens signed with the same keys, `typ=logout+jwt`.
+5a. **Authorization → BU backend**: `authorization_token` (`typ=authz+jwt`, `aud` = client_id, 300 s) signed with the Authorization
+   service's **own** key and verified only with the Authorization JWKS, never with Identity's.
 6. **Administrators → Core APIs**: access token (`typ=at+jwt`) issued from a signed-in Core Portal session, verified via the Identity JWKS; rights come from Core RBAC (`core-portal.*`), never from the token. No API keys or shared secrets exist between components.
 
 ## Module map
@@ -94,9 +97,10 @@ Identity Federation `modules/`: `keys` (providers, keyset rotation, KeyStore, JW
 `rate-limit`, `transactions`, `sessions`, `federation` (logout + back-channel), `embed` (login service, views, controller),
 `portal` (application launcher).
 
-Authorization `modules/`: `auth` (JWKS token verifier, service principals, global JwtAuthGuard), `catalog` (lookups), `business-units`, `utilities`,
-`environments`, `applications`, `app-modules`, `roles`, `permissions`, `users`, `access` (user-roles, role-permissions,
-user-roles, role-permissions), `authorization` (engine + cache), `clients` (registry + lifecycle), `federation`
-(internal API for Identity).
+Authorization `modules/`: `auth` (JWKS token verifier, service principals, global JwtAuthGuard), `rbac` (workspaces, scope
+rules, no-escalation checks, seed matrix), `signing` (own RS256 key + JWKS for `authorization_token`), `authorization`
+(engine + cache, `/authorization/check`, `/effective-permissions`, `/token`), `tenants`, `business-units`, `utilities`,
+`environments`, `applications`, `modules` (`/modules` + `/permissions`), `roles` (`/roles` + `/role-permissions`),
+`users` (`/users`, `/users/sync`, `/user-roles`), `me`, `clients` (registry + lifecycle), `federation` (internal API for Identity).
 
 See each service README for the full tree and the `/v2` extension rule.
