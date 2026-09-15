@@ -96,12 +96,6 @@ h1 { font-size: 21px; line-height: 1.25; margin: 0 0 4px; }
 .lede { margin: 0 0 18px; color: var(--ink-soft); }
 .muted { color: var(--muted); font-size: 13px; }
 
-.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; margin-bottom: 18px; background: var(--ground); border-radius: 10px; }
-.tab {
-  appearance: none; border: 0; background: transparent; color: var(--ink-soft);
-  padding: 8px 10px; border-radius: 8px; font: inherit; font-weight: 600; font-size: 13.5px; cursor: pointer;
-}
-.tab[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
 
 .field { margin-bottom: 14px; }
 .field label { display: block; font-weight: 600; font-size: 13.5px; margin-bottom: 6px; }

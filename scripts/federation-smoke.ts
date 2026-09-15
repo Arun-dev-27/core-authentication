@@ -97,9 +97,15 @@ async function signIn(app: (typeof APPS)[number], mode: 'password' | 'sso') {
       body: JSON.stringify({ transaction_id: b.transaction_id, client_id: b.client_id }),
     });
   }
-  const d = delivery.json;
-  const parts = typeof d?.core_assertion === 'string' ? d.core_assertion.split('.') : [];
-  record(`${app.name}: ${mode === 'password' ? 'password login' : 'SSO continue'} returned compact RS256 assertion for exact origin`, delivery.res.status === 200 && parts.length === 3 && d.target_origin === app.url, `status ${delivery.res.status}${d?.error ? ` ${d.error}` : ''}`);
+  // Login envelope: session.token is the core_assertion, session.delivery says where it goes.
+  const s = delivery.json?.session;
+  const d = { ...(s?.delivery ?? {}), core_assertion: s?.token };
+  const parts = typeof d.core_assertion === 'string' ? d.core_assertion.split('.') : [];
+  record(
+    `${app.name}: ${mode === 'password' ? 'password login' : 'SSO continue'} returned compact RS256 assertion for exact origin (login envelope)`,
+    delivery.res.status === 200 && delivery.json?.success === true && s?.token_type === 'CoreAssertion' && parts.length === 3 && d.target_origin === app.url,
+    `status ${delivery.res.status}, role_type ${s?.role_type}${delivery.json?.error ? ` ${delivery.json.error.code}` : ''}`,
+  );
 
   const payload = { transaction_id: d.transaction_id, state: d.state, core_assertion: d.core_assertion };
   const callback = await http(`${app.url}/auth/core/callback`, { method: 'POST', headers: { 'content-type': 'application/json', origin: app.url }, body: JSON.stringify(payload) });
@@ -127,7 +133,11 @@ async function coreLogin(itsId: string, password: string) {
       headers: { 'content-type': 'application/json', origin: IDENTITY, 'x-csrf-token': b.csrf },
       body: JSON.stringify({ transaction_id: b.transaction_id, role_id: ws.role_id, scope_type: ws.scope_type, scope_id: ws.scope_id }),
     });
-  return { login, body: login.json ?? {}, assignments: (login.json?.assignments ?? []) as Workspace[], select };
+  // Login envelope: session.roles[] (role_type SINGLE | MULTI | NONE); map each role to the workspace shape used below.
+  const session = login.json?.session ?? {};
+  const roles = (session.roles ?? []) as (Omit<Workspace, 'scope_name'> & { tenant_name: string })[];
+  const assignments = roles.map((r) => ({ ...r, scope_name: r.scope_type === 'CORE' ? null : r.tenant_name })) as unknown as Workspace[];
+  return { login, body: login.json ?? {}, session, assignments, select };
 }
 
 async function main() {
@@ -143,22 +153,22 @@ async function main() {
   // ---- Core login with workspaces; admin APIs accept only JWKS-verified, scope-carrying bearer tokens ----
   const core = await coreLogin(ITS_ID, PASSWORD);
   record(
-    `POST /login returns ${ITS_ID}'s workspaces (role x scope) and requires_scope_selection`,
-    core.login.res.status === 200 && core.assignments.length > 0 && core.body.requires_scope_selection === core.assignments.length > 1,
-    core.assignments.map((a) => `${a.role_name}@${a.scope_name}`).join(', '),
+    `POST /login returns ${ITS_ID}'s roles and role_type (login envelope)`,
+    core.login.res.status === 200 && core.body.success === true && core.assignments.length > 0 && core.session.role_type === (core.assignments.length > 1 ? 'MULTI' : 'SINGLE'),
+    `${core.session.role_type}: ${core.assignments.map((a) => `${a.role_name}@${a.scope_name ?? 'Core'}`).join(', ')}`,
   );
-  const unscoped = await http(`${AUTHZ}/me/permissions`, bearer(core.body.token));
+  const unscoped = await http(`${AUTHZ}/me/permissions`, bearer(core.session.token));
   record('Unscoped login token cannot read permissions before POST /select-scope', unscoped.res.status === 403 && unscoped.json?.error === 'SCOPE_SELECTION_REQUIRED', unscoped.json?.error);
 
   const coreWs = core.assignments.find((a) => a.scope_type === 'CORE');
   const coreSel = coreWs ? await core.select(coreWs) : null;
-  const adminToken = coreSel?.json?.token as string | undefined;
+  const adminToken = coreSel?.json?.session?.token as string | undefined;
   const header = adminToken ? JSON.parse(Buffer.from(adminToken.split('.')[0], 'base64url').toString()) : {};
   const adminClaims = claimsOf(adminToken);
   record(
     'POST /select-scope issues an RS256 at+jwt carrying only the active scope (kid in JWKS)',
     coreSel?.res.status === 200 && header.typ === 'at+jwt' && keys.some((k) => k.kid === header.kid) && adminClaims.scope_type === 'CORE' && adminClaims.scope_id === null && !('permissions' in adminClaims),
-    coreSel?.json?.active_scope?.role_name,
+    coreSel?.json?.session?.active_role?.role_name,
   );
   const corePerms = await http(`${AUTHZ}/me/permissions`, bearer(adminToken));
   record('GET /me/permissions resolves the CORE workspace from the Authorization DB', corePerms.res.status === 200 && corePerms.json?.CONFIGURATION?.includes('edit') === true, Object.keys(corePerms.json ?? {}).join(','));
@@ -172,12 +182,12 @@ async function main() {
   const buWs = core.assignments.find((a) => a.role_name === 'RMS Registration Admin');
   if (buWs) {
     const buSel = await core.select(buWs);
-    const buToken = buSel.json?.token as string | undefined;
+    const buToken = buSel.json?.session?.token as string | undefined;
     const buList = await http(`${AUTHZ}/clients`, bearer(buToken));
     record('Switch Workspace: RMS Registration Admin @RMS token is denied Core CONFIGURATION', buSel.res.status === 200 && claimsOf(buToken).scope_id === buWs.scope_id && buList.res.status === 403, buList.json?.error);
   }
   const foreign = await core.select({ role_id: (coreWs ?? core.assignments[0]).role_id, scope_type: 'UTILITY', scope_id: '00000000-0000-4000-8000-000000000000' });
-  record('POST /select-scope rejects a workspace the user does not hold', foreign.res.status === 403 && foreign.json?.error === 'SCOPE_NOT_ASSIGNED', foreign.json?.error);
+  record('POST /select-scope rejects a workspace the user does not hold', foreign.res.status === 403 && foreign.json?.success === false && foreign.json?.error?.code === 'SCOPE_NOT_ASSIGNED', foreign.json?.error?.code);
 
   const userOnCheck = await http(`${AUTHZ}/authorization/check`, {
     method: 'POST',

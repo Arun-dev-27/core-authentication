@@ -16,7 +16,6 @@
   var boot = JSON.parse(bootEl.textContent || '{}');
   var app = boot.application;
   var appName = app ? app.name : 'Miqaat Core Portal';
-  var identityType = 'ITS';
   var workspaces = [];   // role x scope assignments of the signed-in user
   var workspace = null;  // active scope chosen with POST /portal/select-scope
 
@@ -70,8 +69,10 @@
     }).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (data) {
         if (!res.ok) {
-          var error = new Error(data.message || 'Request failed');
-          error.code = data.error || 'HTTP_' + res.status;
+          // Login / select-scope errors: { success: false, error: { code, message } }; other endpoints: { error, message }.
+          var detail = data.error && typeof data.error === 'object' ? data.error : { code: data.error, message: data.message };
+          var error = new Error(detail.message || 'Request failed');
+          error.code = detail.code || 'HTTP_' + res.status;
           error.status = res.status;
           throw error;
         }
@@ -111,6 +112,14 @@
   }
 
   function deliver(result) {
+    // Login envelope: session.token is the core_assertion, session.delivery says how to hand it over.
+    if (result && result.session && result.session.delivery) {
+      var s = result.session;
+      result = {
+        type: s.delivery.type, transaction_id: s.delivery.transaction_id, state: s.delivery.state, core_assertion: s.token,
+        delivery: s.delivery.delivery, target_origin: s.delivery.target_origin, callback_uri: s.delivery.callback_uri,
+      };
+    }
     if (!result || result.type !== 'MIQAAT_AUTH_SUCCESS' || typeof result.core_assertion !== 'string') {
       return showError('Unexpected response from the sign-in service.');
     }
@@ -144,14 +153,14 @@
   }
 
   function showSignIn(errorText) {
-    var isIts = identityType === 'ITS';
     var errorBox = el('div', { class: 'alert alert-error', role: 'alert', id: 'form-error', hidden: !errorText, text: errorText || '' });
 
+    // ITS members only: the sign-in page offers ITS ID + password.
     var idInput = el('input', {
-      class: 'input', id: 'identifier', name: isIts ? 'its_id' : 'identifier',
-      type: isIts ? 'text' : 'email', inputmode: isIts ? 'numeric' : 'email',
+      class: 'input', id: 'identifier', name: 'its_id',
+      type: 'text', inputmode: 'numeric',
       autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true,
-      maxlength: isIts ? 64 : 256, 'aria-describedby': 'form-error', 'aria-invalid': errorText ? 'true' : 'false',
+      maxlength: 64, 'aria-describedby': 'form-error', 'aria-invalid': errorText ? 'true' : 'false',
     });
     var pwInput = el('input', {
       class: 'input has-toggle', id: 'password', name: 'password', type: 'password',
@@ -170,36 +179,34 @@
     });
     var submit = el('button', { type: 'submit', class: 'btn btn-primary', text: 'Sign in' });
 
-    function tab(type, label) {
-      return el('button', {
-        type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(identityType === type),
-        onClick: function () { if (identityType !== type) { identityType = type; showSignIn(); } },
-        text: label,
-      });
-    }
-
     var form = el('form', { novalidate: true, onSubmit: function (event) {
       event.preventDefault();
-      var identifier = idInput.value.trim();
-      if (!identifier || !pwInput.value) {
-        errorBox.textContent = isIts ? 'Enter your ITS ID and password.' : 'Enter your email or username and password.';
+      var itsId = idInput.value.trim();
+      if (!itsId || !pwInput.value) {
+        errorBox.textContent = 'Enter your ITS ID and password.';
         errorBox.hidden = false;
-        (identifier ? pwInput : idInput).focus();
+        (itsId ? pwInput : idInput).focus();
         return notifyResize();
       }
       submit.disabled = true;
       submit.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), document.createTextNode('Signing in…'));
-      var body = { transaction_id: boot.transaction_id, identity_type: identityType, password: pwInput.value };
-      if (isIts) body.its_id = identifier; else body.identifier = identifier;
+      var body = { transaction_id: boot.transaction_id, identity_type: 'ITS', its_id: itsId, password: pwInput.value };
       if (boot.mode !== 'portal') body.client_id = boot.client_id;
 
       api(boot.mode === 'portal' ? '/portal/login' : '/embed/login', body)
         .then(function (result) {
           pwInput.value = '';
           if (boot.mode === 'portal') {
-            boot.session = { its_id: result.its_id, display_name: result.name };
-            workspaces = result.assignments || [];
-            workspace = result.active_scope || null;
+            var s = result.session;
+            if (s) {
+              boot.session = { its_id: s.user.its_id, display_name: s.user.name };
+              workspaces = (s.roles || []).map(toWorkspace);
+              workspace = toWorkspace(s.active_role);
+            } else {
+              boot.session = { its_id: result.its_id, display_name: result.name };
+              workspaces = result.assignments || [];
+              workspace = result.active_scope || null;
+            }
             return workspace || workspaces.length < 2 ? showApplications() : showWorkspaces();
           }
           deliver(result);
@@ -211,7 +218,7 @@
         });
     } }, [
       errorBox,
-      el('div', { class: 'field' }, [el('label', { for: 'identifier', text: isIts ? 'ITS ID' : 'Email or username' }), idInput]),
+      el('div', { class: 'field' }, [el('label', { for: 'identifier', text: 'ITS ID' }), idInput]),
       el('div', { class: 'field' }, [
         el('label', { for: 'password', text: 'Password' }),
         el('div', { class: 'input-wrap' }, [pwInput, toggle]),
@@ -220,8 +227,7 @@
     ]);
 
     render([].concat(
-      heading(isIts ? 'Sign in with your ITS ID' : 'Non-ITS member sign in', 'Use one Miqaat account for every application.'),
-      [el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Account type' }, [tab('ITS', 'ITS member'), tab('NON_ITS', 'Non-ITS member')])],
+      heading('Sign in with your ITS ID', 'Use one Miqaat account for every application.'),
       [form],
       storageHint(),
     ), errorText ? '#identifier' : null);
@@ -283,7 +289,6 @@
     var path = boot.mode === 'portal' ? '/portal/logout' : '/embed/logout';
     api(path, { transaction_id: boot.transaction_id }).catch(function () {}).then(function () {
       boot.session = null;
-      identityType = 'ITS';
       showSignIn();
     });
   }
@@ -322,6 +327,12 @@
     return (ws.scope_type === 'BUSINESS_UNIT' ? 'Business unit' : 'Utility') + ' · ' + (ws.scope_name || ws.scope_id);
   }
 
+  // A login-envelope role { role_id, role_name, scope_type, scope_id, tenant_name } in the workspace shape used by this page.
+  function toWorkspace(role) {
+    if (!role) return null;
+    return { role_id: role.role_id, role_name: role.role_name, scope_type: role.scope_type, scope_id: role.scope_id, scope_name: role.scope_type === 'CORE' ? null : role.tenant_name };
+  }
+
   function sameWorkspace(a, b) {
     return Boolean(a && b) && a.role_id === b.role_id && a.scope_type === b.scope_type && (a.scope_id || null) === (b.scope_id || null);
   }
@@ -347,7 +358,7 @@
       button.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), document.createTextNode('Opening workspace…'));
     }
     return api('/portal/select-scope', { transaction_id: boot.transaction_id, role_id: ws.role_id, scope_type: ws.scope_type, scope_id: ws.scope_id })
-      .then(function (result) { workspace = result.active_scope; showApplications(); })
+      .then(function (result) { workspace = result.session ? toWorkspace(result.session.active_role) : result.active_scope; showApplications(); })
       .catch(function (error) {
         if (error.code === 'SESSION_REQUIRED') { boot.session = null; document.getElementById('app').classList.remove('is-portal-apps'); return showSignIn('Your session has ended. Please sign in again.'); }
         if (error.code === 'CSRF_VALIDATION_FAILED') return showExpired();

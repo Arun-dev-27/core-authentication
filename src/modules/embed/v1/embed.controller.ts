@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Logger, Post, Query, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Logger, Post, Query, Req, Res, UseFilters } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppConfig } from '@config/config.module';
@@ -7,13 +7,17 @@ import { CLIENT_ID_PATTERN, STATE_PATTERN, TRANSACTION_ID_PATTERN } from '@commo
 import { DomainError, Errors } from '@common/errors/domain-error';
 import { canonicalOrigin, originOfReferer } from '@common/utils/origin.util';
 import { AuditService } from '@core/audit/audit.service';
+import { AuthzClient } from '@modules/authorization-client/services/authz-client.service';
 import { DisplayMode, assertClientCanAuthenticate, resolveCallback, resolveEmbedOrigin } from '@modules/clients/services/client-policy';
+import { LoginEnvelope, LoginRole, ModulePermissions, roleType, successEnvelope, toLoginRole, toModulePermissions } from '@modules/portal/services/login-envelope';
+import { LoginEnvelopeFilter } from '@modules/portal/v1/login-envelope.filter';
+import { FederationSession } from '@shared/types/session.types';
 import { ClientRegistry } from '@modules/clients/services/client-registry.service';
 import { FederationSessionService } from '@modules/sessions/services/federation-session.service';
 import { clearSessionCookie, readSessionHandle, setSessionCookie } from '@modules/sessions/services/session-cookie';
 import { TransactionService } from '@modules/transactions/services/transaction.service';
 import { ErrorPageExtras, buildCsp, renderErrorPage, renderLoginPage, sendHtml } from '../services/login-views';
-import { LoginService } from '../services/login.service';
+import { AssertionDelivery, LoginService } from '../services/login.service';
 import { requestMeta } from '../services/request-meta.util';
 import { EmbedLoginDto } from './dto/embed-login.dto';
 import { EmbedLogoutDto } from './dto/embed-logout.dto';
@@ -39,6 +43,7 @@ export class EmbedController {
     private readonly login: LoginService,
     private readonly audit: AuditService,
     private readonly config: AppConfig,
+    private readonly authz: AuthzClient,
   ) {}
 
   @Get('login')
@@ -103,9 +108,10 @@ export class EmbedController {
 
   @Post('login')
   @HttpCode(200)
+  @UseFilters(LoginEnvelopeFilter)
   @ApiHeader({ name: 'x-csrf-token', required: true, description: 'Token from the rendered login page' })
-  @ApiOperation({ summary: 'Authenticate and return the complete RS256 compact assertion for postMessage/form_post delivery' })
-  async authenticate(@Body() dto: EmbedLoginDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
+  @ApiOperation({ summary: 'Authenticate; login envelope with the RS256 core_assertion (session.token), its delivery, role_type, roles, active_role, modules, permissions' })
+  async authenticate(@Body() dto: EmbedLoginDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply): Promise<LoginEnvelope> {
     const identityType = dto.identity_type ?? 'ITS';
     const outcome = await this.login.loginWithPassword(
       {
@@ -118,19 +124,20 @@ export class EmbedController {
       requestMeta(req, this.config, csrf),
     );
     if (outcome.handle) setSessionCookie(reply, this.config, outcome.handle, outcome.cookieMaxAge);
-    return outcome.delivery;
+    return this.envelope(req, outcome.session, outcome.delivery!, dto.client_id);
   }
 
   @Post('continue')
   @HttpCode(200)
+  @UseFilters(LoginEnvelopeFilter)
   @ApiHeader({ name: 'x-csrf-token', required: true })
-  @ApiOperation({ summary: 'SSO: issue an assertion for this client from the existing federation session' })
-  async continueSession(@Body() dto: TransactionRefDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
+  @ApiOperation({ summary: 'SSO: issue an assertion for this client from the existing federation session; same login envelope as POST /embed/login' })
+  async continueSession(@Body() dto: TransactionRefDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply): Promise<LoginEnvelope> {
     try {
       const outcome = await this.login.continueWithSession({ transactionId: dto.transaction_id, clientId: dto.client_id }, requestMeta(req, this.config, csrf));
       const handle = readSessionHandle(req, this.config);
       if (handle) setSessionCookie(reply, this.config, handle, outcome.cookieMaxAge);
-      return outcome.delivery;
+      return await this.envelope(req, outcome.session, outcome.delivery!, dto.client_id);
     } catch (error) {
       if (error instanceof DomainError && error.code === 'SESSION_REQUIRED') clearSessionCookie(reply, this.config);
       throw error;
@@ -145,6 +152,40 @@ export class EmbedController {
     await this.login.endBrowserSession(dto.transaction_id, requestMeta(req, this.config, csrf));
     clearSessionCookie(reply, this.config);
     return { logged_out: true };
+  }
+
+  /**
+   * The same envelope as the Core Portal login. session.token is the core_assertion (identity only, unchanged);
+   * roles come from the Core workspace list. The parent application still receives only the postMessage fields.
+   */
+  private async envelope(req: FastifyRequest, session: FederationSession, delivery: AssertionDelivery, clientId: string): Promise<LoginEnvelope> {
+    const workspaces = await this.authz.getAssignments(session.its_id);
+    const roles = workspaces.assignments.map(toLoginRole);
+    let activeRole: LoginRole | null = null;
+    let access: { modules: string[]; permissions: Record<string, ModulePermissions> } = { modules: [], permissions: {} };
+    if (workspaces.assignments.length === 1) {
+      const only = workspaces.assignments[0];
+      const resolved = await this.authz.resolveAssignment(session.its_id, { role_id: only.role_id, scope_type: only.scope_type, scope_id: only.scope_id ?? null });
+      if (resolved) {
+        activeRole = toLoginRole(resolved.active_scope);
+        access = toModulePermissions(resolved.permissions);
+      }
+    }
+    const { core_assertion: assertion, ...details } = delivery;
+    return successEnvelope(req.id, {
+      token: assertion,
+      token_type: 'CoreAssertion',
+      expires_in: this.config.env.ASSERTION_TTL_SECONDS,
+      audience: clientId,
+      user: { id: session.its_id, its_id: session.its_id, name: workspaces.name ?? session.display_name, status: 'ACTIVE' },
+      role_type: roleType(roles.length),
+      active_role: activeRole,
+      roles,
+      modules: access.modules,
+      permissions: access.permissions,
+      onboarding_required: false,
+      delivery: details,
+    });
   }
 
   /**

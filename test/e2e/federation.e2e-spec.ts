@@ -254,16 +254,16 @@ describe('authentication, assertion and SSO', () => {
   it('requires CSRF token and same-origin request', async () => {
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
     const noCsrf = await postLogin({ ...boot!, csrf: 'wrong' }, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
-    expect(noCsrf.json()).toMatchObject({ error: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISMATCH' } });
+    expect(noCsrf.json()).toMatchObject({ success: false, session: null, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISMATCH' } } });
     const crossOrigin = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD }, { origin: RMS });
-    expect(crossOrigin.json()).toMatchObject({ error: 'CSRF_VALIDATION_FAILED', details: { reason: 'ORIGIN_HEADER_MISMATCH' } });
+    expect(crossOrigin.json()).toMatchObject({ success: false, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'ORIGIN_HEADER_MISMATCH' } } });
     const missing = await app.inject({
       method: 'POST',
       url: '/embed/login',
       headers: { origin: ISSUER, 'content-type': 'application/json' },
       payload: { transaction_id: boot!.transaction_id, client_id: 'rms-web-test', its_id: 'ITS12345', password: PASSWORD },
     });
-    expect(missing.json()).toMatchObject({ error: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISSING' } });
+    expect(missing.json()).toMatchObject({ success: false, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISSING' } } });
   });
 
   it('returns the same error for wrong password and unknown user', async () => {
@@ -273,7 +273,8 @@ describe('authentication, assertion and SSO', () => {
     const unknown = await postLogin(b.boot!, 'rms-web-test', { its_id: 'ITS00000', password: 'nope' });
     expect(wrong.statusCode).toBe(401);
     expect(unknown.statusCode).toBe(401);
-    expect(wrong.json().message).toBe(unknown.json().message);
+    expect(wrong.json().error.code).toBe('INVALID_CREDENTIALS');
+    expect(wrong.json().error).toEqual(unknown.json().error);
   });
 
   it('authenticates and returns a complete RS256 compact assertion with minimal claims', async () => {
@@ -281,12 +282,33 @@ describe('authentication, assertion and SSO', () => {
     const res = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body).toMatchObject({ type: 'MIQAAT_AUTH_SUCCESS', transaction_id: txn, state, delivery: 'post_message', target_origin: RMS });
-    expect(body.core_assertion.split('.')).toHaveLength(3);
+    expect(body).toMatchObject({
+      success: true,
+      error: null,
+      scope: null,
+      request_id: expect.any(String),
+      timestamp: expect.any(String),
+      session: {
+        token_type: 'CoreAssertion',
+        audience: 'rms-web-test',
+        expires_in: env.ASSERTION_TTL_SECONDS,
+        user: { id: 'ITS12345', its_id: 'ITS12345', status: 'ACTIVE' },
+        role_type: 'NONE',
+        active_role: null,
+        roles: [],
+        modules: [],
+        permissions: {},
+        onboarding_required: false,
+        delivery: { type: 'MIQAAT_AUTH_SUCCESS', transaction_id: txn, state, delivery: 'post_message', target_origin: RMS },
+      },
+    });
+    expect(body.session.delivery).not.toHaveProperty('core_assertion');
+    const assertion = body.session.token as string;
+    expect(assertion.split('.')).toHaveLength(3);
 
-    const header = decodeProtectedHeader(body.core_assertion);
+    const header = decodeProtectedHeader(assertion);
     expect(header).toMatchObject({ alg: 'RS256', typ: 'JWT' });
-    const claims = decodeJwt(body.core_assertion);
+    const claims = decodeJwt(assertion);
     expect(Object.keys(claims).sort()).toEqual(['aud', 'auth_time', 'exp', 'iat', 'iss', 'jti', 'sid', 'sub', 'txn']);
     expect(claims).toMatchObject({ iss: ISSUER, sub: 'ITS12345', aud: 'rms-web-test', txn });
     expect((claims.exp as number) - (claims.iat as number)).toBe(env.ASSERTION_TTL_SECONDS);
@@ -296,7 +318,7 @@ describe('authentication, assertion and SSO', () => {
     expect(setCookie.value).not.toBe(claims.sid);
     expect(setCookie.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
-    rmsAssertion = body.core_assertion;
+    rmsAssertion = assertion;
     cookie = sessionCookie(res);
     sid = claims.sid as string;
 
@@ -309,14 +331,14 @@ describe('authentication, assertion and SSO', () => {
     expect((await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).statusCode).toBe(200);
     const again = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
     expect(again.statusCode).toBe(409);
-    expect(again.json().error).toBe('TRANSACTION_ALREADY_USED');
+    expect(again.json()).toMatchObject({ success: false, session: null, error: { code: 'TRANSACTION_ALREADY_USED' } });
   });
 
   it('BU verification rejects replay, other audiences and wrong transaction', async () => {
     const { boot, txn } = await openLogin('rms-web-test', { origin: RMS, cookie });
     // SSO continuation: fresh assertion for rms
     const res = await app.inject({ method: 'POST', url: '/embed/continue', headers: { origin: ISSUER, 'x-csrf-token': boot!.csrf, cookie }, payload: { transaction_id: txn, client_id: 'rms-web-test' } });
-    const token = res.json().core_assertion as string;
+    const token = res.json().session.token as string;
     const store = new MemoryReplayStore();
     const rmsVerifier = await verifierFor('rms-web-test', store);
     await expect(rmsVerifier.verifyLoginAssertion(token, { transactionId: 'txn-other' })).rejects.toMatchObject({ code: 'TRANSACTION_MISMATCH' });
@@ -330,9 +352,9 @@ describe('authentication, assertion and SSO', () => {
     expect(boot!.session).toMatchObject({ its_id: 'ITS12345' });
     const res = await app.inject({ method: 'POST', url: '/embed/continue', headers: { origin: ISSUER, 'x-csrf-token': boot!.csrf, cookie }, payload: { transaction_id: txn, client_id: 'ams-web-test' } });
     expect(res.statusCode).toBe(200);
-    const claims = decodeJwt(res.json().core_assertion);
+    const claims = decodeJwt(res.json().session.token);
     expect(claims).toMatchObject({ aud: 'ams-web-test', sid, sub: 'ITS12345' });
-    expect(res.json().target_origin).toBe(AMS);
+    expect(res.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', audience: 'ams-web-test', delivery: { target_origin: AMS } } });
 
     const session = await app.inject({ method: 'GET', url: '/auth/session', headers: { cookie } });
     expect(session.json()).toMatchObject({ authenticated: true, its_id: 'ITS12345', clients: ['ams-web-test', 'rms-web-test'] });
@@ -367,7 +389,7 @@ describe('authentication, assertion and SSO', () => {
     const { boot, txn } = await openLogin('rms-web-test', { origin: RMS, cookie });
     expect(boot!.session).toBeNull();
     const cont = await app.inject({ method: 'POST', url: '/embed/continue', headers: { origin: ISSUER, 'x-csrf-token': boot!.csrf, cookie }, payload: { transaction_id: txn, client_id: 'rms-web-test' } });
-    expect(cont.json().error).toBe('SESSION_REQUIRED');
+    expect(cont.json()).toMatchObject({ success: false, session: null, error: { code: 'SESSION_REQUIRED' } });
     expect(rmsAssertion).toBeTruthy();
   });
 });
@@ -377,7 +399,7 @@ describe('account and brute-force protection', () => {
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
     const res = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS99999', password: PASSWORD });
     expect(res.statusCode).toBe(403);
-    expect(res.json().error).toBe('ACCOUNT_UNAVAILABLE');
+    expect(res.json().error.code).toBe('ACCOUNT_UNAVAILABLE');
   });
 
   it('locks an identifier after repeated failures', async () => {
@@ -399,7 +421,7 @@ describe('account and brute-force protection', () => {
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
     const res = await postLogin(boot!, 'rms-web-test', { identity_type: 'NON_ITS', identifier: 'Guest@Example.test', password: PASSWORD });
     expect(res.statusCode).toBe(200);
-    expect(decodeJwt(res.json().core_assertion).sub).toBe('NITS-0001');
+    expect(decodeJwt(res.json().session.token).sub).toBe('NITS-0001');
   });
 
 
@@ -416,7 +438,7 @@ describe('signing key rotation', () => {
   it('stages, promotes and keeps previously issued assertions verifiable', async () => {
     const keyStore = app.get(KeyStore);
     const { boot, txn } = await openLogin('rms-web-test', { origin: RMS });
-    const before = (await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).json().core_assertion as string;
+    const before = (await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).json().session.token as string;
     const oldKid = decodeProtectedHeader(before).kid;
 
     await keyProvider.save(rotateKeyset(await keyProvider.load(), 'stage', { bits: 2048 }));
@@ -427,7 +449,7 @@ describe('signing key rotation', () => {
     await keyStore.reload();
 
     const next = await openLogin('rms-web-test', { origin: RMS });
-    const after = (await postLogin(next.boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).json().core_assertion as string;
+    const after = (await postLogin(next.boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).json().session.token as string;
     expect(decodeProtectedHeader(after).kid).not.toBe(oldKid);
 
     const verifier = await verifierFor('rms-web-test');
@@ -490,8 +512,27 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
   it('POST /login returns every assignment and an unscoped token when a workspace must be selected', async () => {
     jest.spyOn(app.get(AuthzClient), 'getAssignments').mockResolvedValueOnce({ its_id: 'ITS12345', name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
     const { body } = await portalLogin('/login');
-    expect(body).toMatchObject({ its_id: 'ITS12345', name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES, active_scope: null, token_type: 'Bearer' });
-    const claims = await claimsOf(body.token);
+    expect(body).toMatchObject({
+      success: true,
+      error: null,
+      scope: null,
+      request_id: expect.any(String),
+      session: {
+        token_type: 'Bearer',
+        user: { id: 'ITS12345', its_id: 'ITS12345', name: 'Murtaza Saifuddin', status: 'ACTIVE' },
+        role_type: 'MULTI',
+        active_role: null,
+        modules: [],
+        permissions: {},
+        onboarding_required: false,
+      },
+    });
+    expect(body.session.roles).toEqual([
+      { role_id: ROLE_BU, role_name: 'Business Unit Admin', level: 'BUSINESS_UNIT_ADMIN', tenant_id: BU_RMS, tenant_name: 'RMS', scope_type: 'BUSINESS_UNIT', scope_id: BU_RMS },
+      { role_id: ROLE_UTIL, role_name: 'Utility Admin', level: 'UTILITY_ADMIN', tenant_id: UT_HELPDESK, tenant_name: 'Helpdesk', scope_type: 'UTILITY', scope_id: UT_HELPDESK },
+      { role_id: ROLE_UTIL, role_name: 'Utility Admin', level: 'UTILITY_ADMIN', tenant_id: UT_ZONE, tenant_name: 'Zone Support', scope_type: 'UTILITY', scope_id: UT_ZONE },
+    ]);
+    const claims = await claimsOf(body.session.token);
     expect(Object.keys(claims).sort()).toEqual(['aud', 'exp', 'iat', 'iss', 'jti', 'sid', 'sub', 'token_use']);
   });
 
@@ -500,10 +541,37 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     jest.spyOn(authz, 'getAssignments').mockResolvedValueOnce({ its_id: 'ITS12345', name: 'Burhan', requires_scope_selection: false, assignments: [WORKSPACES[0]] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce({ active_scope: WORKSPACES[0], permissions: UTIL_PERMS });
     const { body } = await portalLogin();
-    expect(body).toMatchObject({ requires_scope_selection: false, active_scope: WORKSPACES[0], permissions: UTIL_PERMS });
-    const claims = await claimsOf(body.token);
+    expect(body).toMatchObject({
+      success: true,
+      scope: 'BUSINESS_UNIT',
+      session: {
+        role_type: 'SINGLE',
+        active_role: { role_id: ROLE_BU, role_name: 'Business Unit Admin', level: 'BUSINESS_UNIT_ADMIN', tenant_id: BU_RMS, tenant_name: 'RMS' },
+        roles: [expect.objectContaining({ role_id: ROLE_BU, scope_type: 'BUSINESS_UNIT' })],
+        modules: ['dashboard', 'role-management', 'user-management'],
+        permissions: {
+          dashboard: { create: false, read: true, update: false, delete: false, approve: false, export: false },
+          'role-management': { create: true, read: true, update: true, delete: false, approve: false, export: false },
+          'user-management': { create: true, read: true, update: true, delete: false, approve: false, export: false },
+        },
+      },
+    });
+    const claims = await claimsOf(body.session.token);
     expect(claims).toMatchObject({ sub: 'ITS12345', role_id: ROLE_BU, scope_type: 'BUSINESS_UNIT', scope_id: BU_RMS });
     expect(Object.keys(claims)).not.toContain('permissions');
+  });
+
+  it('login errors use the envelope with the usual HTTP status', async () => {
+    const page = await app.inject({ method: 'GET', url: '/portal' });
+    const boot = bootOf(page.body);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/login',
+      headers: { origin: ISSUER, 'x-csrf-token': boot.csrf, 'content-type': 'application/json' },
+      payload: { transaction_id: boot.transaction_id, its_id: 'ITS77777', password: 'wrong-password' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({ success: false, session: null, scope: null, request_id: expect.any(String), timestamp: expect.any(String), error: { code: 'INVALID_CREDENTIALS', message: expect.any(String) } });
   });
 
   it('POST /select-scope issues a scoped token only for an assigned workspace, with session + CSRF', async () => {
@@ -514,27 +582,39 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     const select = (headers: Record<string, string>, payload: Record<string, unknown> = choice, url = '/select-scope') =>
       app.inject({ method: 'POST', url, headers: { origin: ISSUER, 'x-csrf-token': boot.csrf, cookie, ...headers }, payload });
 
-    expect((await select({ cookie: '' })).json().error).toBe('SESSION_REQUIRED');
+    expect((await select({ cookie: '' })).json().error.code).toBe('SESSION_REQUIRED');
     expect((await select({ 'x-csrf-token': 'wrong' })).statusCode).toBe(403);
     expect((await select({ origin: RMS })).statusCode).toBe(403);
-    expect((await select({}, { ...choice, scope_id: 'util-001' })).json().error).toBe('VALIDATION_ERROR');
+    expect((await select({}, { ...choice, scope_id: 'util-001' })).json().error.code).toBe('VALIDATION_ERROR');
 
     const resolve = jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce(null);
     const rejected = await select({});
     expect(rejected.statusCode).toBe(403);
-    expect(rejected.json().error).toBe('SCOPE_NOT_ASSIGNED');
+    expect(rejected.json()).toMatchObject({ success: false, session: null, error: { code: 'SCOPE_NOT_ASSIGNED' } });
     expect(resolve).toHaveBeenLastCalledWith('ITS12345', { role_id: ROLE_UTIL, scope_type: 'UTILITY', scope_id: UT_HELPDESK });
 
     resolve.mockResolvedValueOnce({ active_scope: WORKSPACES[1], permissions: UTIL_PERMS });
     const ok = await select({});
     expect(ok.statusCode).toBe(200);
-    expect(ok.json()).toMatchObject({ active_scope: WORKSPACES[1], token_type: 'Bearer', permissions: UTIL_PERMS, audience: env.AUTHZ_AUDIENCE });
-    expect(await claimsOf(ok.json().token)).toMatchObject({ role_id: ROLE_UTIL, scope_type: 'UTILITY', scope_id: UT_HELPDESK });
+    expect(ok.json()).toMatchObject({
+      success: true,
+      scope: 'UTILITY',
+      session: {
+        token_type: 'Bearer',
+        audience: env.AUTHZ_AUDIENCE,
+        role_type: 'MULTI',
+        active_role: { role_id: ROLE_UTIL, level: 'UTILITY_ADMIN', tenant_id: UT_HELPDESK, tenant_name: 'Helpdesk', scope_type: 'UTILITY', scope_id: UT_HELPDESK },
+        modules: ['dashboard', 'role-management', 'user-management'],
+      },
+    });
+    expect(ok.json().session.roles).toHaveLength(3);
+    expect(await claimsOf(ok.json().session.token)).toMatchObject({ role_id: ROLE_UTIL, scope_type: 'UTILITY', scope_id: UT_HELPDESK });
 
     // Switch Workspace without logging out, through the /portal alias
     resolve.mockResolvedValueOnce({ active_scope: WORKSPACES[2], permissions: UTIL_PERMS });
     const switched = await select({}, { ...choice, scope_id: UT_ZONE }, '/portal/select-scope');
-    expect(await claimsOf(switched.json().token)).toMatchObject({ scope_id: UT_ZONE });
+    expect(await claimsOf(switched.json().session.token)).toMatchObject({ scope_id: UT_ZONE });
+    expect(switched.json().session.active_role).toMatchObject({ tenant_id: UT_ZONE, tenant_name: 'Zone Support' });
 
     const listed = await app.inject({ method: 'GET', url: '/portal/assignments', headers: { cookie } });
     expect(listed.json()).toMatchObject({ its_id: 'ITS12345', requires_scope_selection: true, assignments: WORKSPACES });
@@ -553,7 +633,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
       app.inject({ method: 'POST', url: '/portal/select-scope', headers: { origin: ISSUER, 'x-csrf-token': first.boot.csrf, cookie }, payload });
 
     const foreign = await select(second.cookie);
-    expect(foreign.json()).toMatchObject({ error: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISMATCH' } });
+    expect(foreign.json()).toMatchObject({ success: false, session: null, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISMATCH' } } });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce({ active_scope: WORKSPACES[1], permissions: UTIL_PERMS });
     expect((await select(first.cookie)).statusCode).toBe(200);
   });
@@ -571,7 +651,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
         headers: { origin: ISSUER, 'x-csrf-token': boot.csrf, cookie },
         payload: { transaction_id: boot.transaction_id, role_id: ws.role_id, scope_type: ws.scope_type, scope_id: ws.scope_id, audience },
       });
-      return res.json().token as string;
+      return res.json().session.token as string;
     };
     const coreIdentityToken = await tokenFor(CORE_WS, 'identity');
     const coreAuthzToken = await tokenFor(CORE_WS, 'authorization');
@@ -580,7 +660,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
 
     expect((await forceLogout('not-a-token')).statusCode).toBe(401);
     expect((await forceLogout(coreAuthzToken)).statusCode).toBe(401); // wrong audience
-    expect((await forceLogout(body.token)).statusCode).toBe(401); // unscoped token has the authorization audience
+    expect((await forceLogout(body.session.token)).statusCode).toBe(401); // unscoped token has the authorization audience
     resolve.mockResolvedValueOnce({ active_scope: WORKSPACES[0], permissions: CORE_PERMS });
     expect((await forceLogout(buIdentityToken)).json().error).toBe('ADMIN_PERMISSION_DENIED');
     resolve.mockResolvedValueOnce(null);
@@ -619,7 +699,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
         headers: { origin: ISSUER, 'x-csrf-token': boot.csrf, cookie },
         payload: { transaction_id: boot.transaction_id, role_id: ws.role_id, scope_type: ws.scope_type, scope_id: ws.scope_id, audience: 'identity' },
       });
-      return res.json().token as string;
+      return res.json().session.token as string;
     };
     const coreToken = await identityToken(CORE_WS);
     const buToken = await identityToken(WORKSPACES[0]);
@@ -666,7 +746,7 @@ describe('transaction API (POST /auth/transaction, GET /auth/transaction/:id)', 
 
     const login = await postLogin({ transaction_id: body.transaction_id, csrf: body.csrf }, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
     expect(login.statusCode).toBe(200);
-    expect(login.json()).toMatchObject({ type: 'MIQAAT_AUTH_SUCCESS', transaction_id: body.transaction_id, target_origin: RMS });
+    expect(login.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', delivery: { type: 'MIQAAT_AUTH_SUCCESS', transaction_id: body.transaction_id, target_origin: RMS } } });
 
     const status = await app.inject({ method: 'GET', url: `/auth/transaction/${body.transaction_id}?client_id=rms-web-test` });
     expect(status.json()).toMatchObject({ transaction_id: body.transaction_id, status: 'COMPLETED', target_origin: RMS });
@@ -687,5 +767,58 @@ describe('transaction API (POST /auth/transaction, GET /auth/transaction/:id)', 
     expect((await create({ client_id: 'rms-web-test', state: 'multi-state-abcdefghij-2' })).json().error).toBe('ORIGIN_NOT_ALLOWED');
     expect((await create({ client_id: 'rms-web-test', state: 'multi-state-abcdefghij-3', origin: 'https://evil.example.test' })).json().error).toBe('ORIGIN_NOT_ALLOWED');
     getClient.mockImplementation(async (id: string) => registry()[id] ?? null);
+  });
+});
+
+describe('embedded login envelope (same pattern as the Core Portal login)', () => {
+  const BU_ID = '2c3d4e5f-6071-4c8d-8e9f-1a2b3c4d5e6f';
+  const UT_ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+  const BU_ROLE = { role_id: '7c2d4e3f-9b4e-4b6c-8d2f-3e4f5a6b7c8d', role_name: 'Business Unit Admin', scope_type: 'BUSINESS_UNIT' as const, scope_id: BU_ID, scope_name: 'RMS' };
+  const UT_ROLE = { role_id: '6b1f3c2e-8a3d-4a5b-9c1e-2d3f4a5b6c7d', role_name: 'Utility Admin', scope_type: 'UTILITY' as const, scope_id: UT_ID, scope_name: 'Helpdesk' };
+
+  afterEach(() => {
+    const authz = app.get(AuthzClient);
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
+    jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
+  });
+
+  it('single role: SINGLE with active_role, modules and permissions; the assertion stays identity-only', async () => {
+    const authz = app.get(AuthzClient);
+    jest.spyOn(authz, 'getAssignments').mockResolvedValueOnce({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [BU_ROLE] });
+    jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce({ active_scope: BU_ROLE, permissions: { DASHBOARD: ['view'], RMS_REGISTRATION: ['view', 'create'] } });
+    const { boot } = await openLogin('rms-web-test', { origin: RMS });
+    const res = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      success: true,
+      scope: 'BUSINESS_UNIT',
+      session: {
+        token_type: 'CoreAssertion',
+        user: { its_id: 'ITS12345', name: 'Test Member', status: 'ACTIVE' },
+        role_type: 'SINGLE',
+        active_role: { role_id: BU_ROLE.role_id, role_name: 'Business Unit Admin', level: 'BUSINESS_UNIT_ADMIN', tenant_id: BU_ID, tenant_name: 'RMS', scope_type: 'BUSINESS_UNIT', scope_id: BU_ID },
+        roles: [expect.objectContaining({ role_id: BU_ROLE.role_id, level: 'BUSINESS_UNIT_ADMIN' })],
+        modules: ['dashboard', 'rms-registration'],
+        permissions: { dashboard: { read: true, create: false }, 'rms-registration': { read: true, create: true, update: false } },
+      },
+    });
+    const claims = decodeJwt(res.json().session.token);
+    expect(Object.keys(claims).sort()).toEqual(['aud', 'auth_time', 'exp', 'iat', 'iss', 'jti', 'sid', 'sub', 'txn']);
+  });
+
+  it('several roles: MULTI with every role and no active role, for password sign-in and SSO continue', async () => {
+    const authz = app.get(AuthzClient);
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: true, assignments: [BU_ROLE, UT_ROLE] });
+    const first = await openLogin('rms-web-test', { origin: RMS });
+    const login = await postLogin(first.boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    expect(login.json()).toMatchObject({ success: true, scope: null, session: { role_type: 'MULTI', active_role: null, modules: [], permissions: {} } });
+    expect(login.json().session.roles.map((r: { level: string; tenant_name: string }) => `${r.level}:${r.tenant_name}`)).toEqual(['BUSINESS_UNIT_ADMIN:RMS', 'UTILITY_ADMIN:Helpdesk']);
+
+    const cookie = sessionCookie(login);
+    const second = await openLogin('ams-web-test', { origin: AMS, cookie });
+    const cont = await app.inject({ method: 'POST', url: '/embed/continue', headers: { origin: ISSUER, 'x-csrf-token': second.boot!.csrf, cookie }, payload: { transaction_id: second.txn, client_id: 'ams-web-test' } });
+    expect(cont.statusCode).toBe(200);
+    expect(cont.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', audience: 'ams-web-test', role_type: 'MULTI', roles: expect.any(Array), delivery: { type: 'MIQAAT_AUTH_SUCCESS', transaction_id: second.txn, target_origin: AMS } } });
+    expect(decodeJwt(cont.json().session.token)).toMatchObject({ aud: 'ams-web-test', sub: 'ITS12345' });
   });
 });

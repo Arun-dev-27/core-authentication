@@ -14,6 +14,15 @@ import { readSessionHandle, setSessionCookie } from '@modules/sessions/services/
 import { TransactionService } from '@modules/transactions/services/transaction.service';
 import { ActiveScopeClaim, WorkspaceAssignment } from '@shared/types/federation-client.types';
 import { FederationSession } from '@shared/types/session.types';
+import { LoginEnvelope, LoginRole, LoginSession, LoginUser, roleType, successEnvelope, toLoginRole, toModulePermissions } from './login-envelope';
+
+interface ActivatedWorkspace {
+  active_scope: WorkspaceAssignment;
+  token: string;
+  expiresIn: number;
+  audience: string;
+  permissions: Record<string, string[]>;
+}
 
 export interface PortalLoginInput {
   transaction_id: string;
@@ -49,7 +58,11 @@ export class PortalLoginService {
     private readonly config: AppConfig,
   ) {}
 
-  async signIn(input: PortalLoginInput, csrf: string, req: FastifyRequest, reply: FastifyReply) {
+  /**
+   * role_type SINGLE: the only role is activated (scoped token, active_role, modules, permissions).
+   * role_type MULTI / NONE: unscoped token, every role in `roles`, active_role null until POST /select-scope.
+   */
+  async signIn(input: PortalLoginInput, csrf: string, req: FastifyRequest, reply: FastifyReply): Promise<LoginEnvelope> {
     const identityType = input.identity_type ?? 'ITS';
     const outcome = await this.login.loginWithPassword(
       { transactionId: input.transaction_id, clientId: null, identityType, identifier: identityType === 'ITS' ? input.its_id! : input.identifier!, password: input.password },
@@ -59,18 +72,26 @@ export class PortalLoginService {
 
     const session = outcome.session;
     const workspaces = await this.authz.getAssignments(session.its_id);
-    const base = {
-      its_id: session.its_id,
-      name: workspaces.name ?? session.display_name,
-      requires_scope_selection: workspaces.assignments.length > 1,
-      assignments: workspaces.assignments,
-    };
+    const user = this.user(session, workspaces.name);
+    const roles = workspaces.assignments.map(toLoginRole);
     if (workspaces.assignments.length === 1) {
       const selected = await this.activate(session, workspaces.assignments[0], 'authorization', req.ip);
-      return { ...base, ...selected };
+      return successEnvelope(req.id, this.toSession(selected, user, roles));
     }
     const unscoped = await this.assertions.issueAccessToken({ itsId: session.its_id, sid: session.sid, audience: this.config.env.AUTHZ_AUDIENCE });
-    return { ...base, token: unscoped.token, token_type: 'Bearer', expires_in: unscoped.expiresIn, active_scope: null };
+    return successEnvelope(req.id, {
+      token: unscoped.token,
+      token_type: 'Bearer',
+      expires_in: unscoped.expiresIn,
+      audience: this.config.env.AUTHZ_AUDIENCE,
+      user,
+      role_type: roleType(roles.length),
+      active_role: null,
+      roles,
+      modules: [],
+      permissions: {},
+      onboarding_required: false,
+    });
   }
 
   /** Workspaces of the signed-in browser session (page reload, "Switch Workspace"). */
@@ -82,17 +103,42 @@ export class PortalLoginService {
     return { ...workspaces, name: workspaces.name ?? session.display_name, requires_scope_selection: workspaces.assignments.length > 1 };
   }
 
-  async selectScope(input: SelectScopeInput, csrf: string, req: FastifyRequest) {
+  /** The same envelope as sign-in for the chosen role; role_type and roles describe every role the user holds. */
+  async selectScope(input: SelectScopeInput, csrf: string, req: FastifyRequest): Promise<LoginEnvelope> {
     if (canonicalOrigin(req.headers.origin) !== this.config.issuerOrigin) throw Errors.csrf('ORIGIN_HEADER_MISMATCH');
     const txn = await this.transactions.get(input.transaction_id);
     if (!txn || txn.display !== 'portal' || !safeEqual(csrf, txn.csrf)) throw Errors.csrf();
     const session = await this.sessions.getByHandle(readSessionHandle(req, this.config));
     if (!session) throw Errors.sessionRequired();
     if (!(await this.transactions.bindToSession(txn.transaction_id, session))) throw Errors.csrf();
-    return this.activate(session, { role_id: input.role_id, scope_type: input.scope_type, scope_id: input.scope_id ?? null }, input.audience ?? 'authorization', req.ip);
+    const selected = await this.activate(session, { role_id: input.role_id, scope_type: input.scope_type, scope_id: input.scope_id ?? null }, input.audience ?? 'authorization', req.ip);
+    const workspaces = await this.authz.getAssignments(session.its_id);
+    return successEnvelope(req.id, this.toSession(selected, this.user(session, workspaces.name), workspaces.assignments.map(toLoginRole)));
   }
 
-  private async activate(session: FederationSession, scope: ActiveScopeClaim | WorkspaceAssignment, audienceName: 'authorization' | 'identity', ip: string) {
+  private user(session: FederationSession, name: string | null): LoginUser {
+    // The federation session only exists for an account that just passed the ACTIVE check at sign-in.
+    return { id: session.its_id, its_id: session.its_id, name: name ?? session.display_name, status: 'ACTIVE' };
+  }
+
+  private toSession(selected: ActivatedWorkspace, user: LoginUser, roles: LoginRole[]): LoginSession {
+    const { modules, permissions } = toModulePermissions(selected.permissions);
+    return {
+      token: selected.token,
+      token_type: 'Bearer',
+      expires_in: selected.expiresIn,
+      audience: selected.audience,
+      user,
+      role_type: roleType(roles.length),
+      active_role: toLoginRole(selected.active_scope),
+      roles,
+      modules,
+      permissions,
+      onboarding_required: false,
+    };
+  }
+
+  private async activate(session: FederationSession, scope: ActiveScopeClaim | WorkspaceAssignment, audienceName: 'authorization' | 'identity', ip: string): Promise<ActivatedWorkspace> {
     const claim: ActiveScopeClaim = { role_id: scope.role_id, scope_type: scope.scope_type, scope_id: scope.scope_id ?? null };
     const resolved = await this.authz.resolveAssignment(session.its_id, claim);
     if (!resolved) {
@@ -113,8 +159,7 @@ export class PortalLoginService {
     return {
       active_scope: resolved.active_scope,
       token: issued.token,
-      token_type: 'Bearer',
-      expires_in: issued.expiresIn,
+      expiresIn: issued.expiresIn,
       audience,
       permissions: resolved.permissions,
     };

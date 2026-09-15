@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Post, Req, Res, UseFilters } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppConfig } from '@config/config.module';
@@ -18,6 +18,7 @@ import { PortalLoginService } from '../services/portal-login.service';
 import { PortalLoginDto } from './dto/portal-login.dto';
 import { PortalLogoutDto } from './dto/portal-logout.dto';
 import { SelectScopeDto } from './dto/select-scope.dto';
+import { LoginEnvelopeFilter } from './login-envelope.filter';
 
 /**
  * Core Portal: sign in once, select a workspace (role × scope), then launch an application the user is entitled to
@@ -67,7 +68,8 @@ export class PortalController {
   @Post('login')
   @HttpCode(200)
   @ApiHeader({ name: 'x-csrf-token', required: true })
-  @ApiOperation({ summary: 'Sign in; returns every workspace (role × scope) and requires_scope_selection' })
+  @UseFilters(LoginEnvelopeFilter)
+  @ApiOperation({ summary: 'Sign in; login envelope with session.role_type (SINGLE | MULTI | NONE), roles[], active_role, modules, permissions' })
   signIn(@Body() dto: PortalLoginDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
     return this.portalLogin.signIn(dto, csrf, req, reply);
   }
@@ -81,7 +83,8 @@ export class PortalController {
   @Post('select-scope')
   @HttpCode(200)
   @ApiHeader({ name: 'x-csrf-token', required: true })
-  @ApiOperation({ summary: 'Activate a workspace; returns active_scope + a token scoped to it (switch without logging out)' })
+  @UseFilters(LoginEnvelopeFilter)
+  @ApiOperation({ summary: 'Activate a role (switch without logging out); login envelope with the active_role, its modules, permissions and scoped token' })
   selectScope(@Body() dto: SelectScopeDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest) {
     return this.portalLogin.selectScope(dto, csrf, req);
   }
@@ -124,7 +127,8 @@ export class CoreLoginController {
   @Post('login')
   @HttpCode(200)
   @ApiHeader({ name: 'x-csrf-token', required: true })
-  @ApiOperation({ summary: 'POST /login - credentials; returns its_id, name, token, requires_scope_selection, assignments' })
+  @UseFilters(LoginEnvelopeFilter)
+  @ApiOperation({ summary: 'POST /login - credentials; login envelope with session.role_type (SINGLE | MULTI | NONE), roles[], active_role, modules, permissions' })
   signIn(@Body() dto: PortalLoginDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
     return this.portalLogin.signIn(dto, csrf, req, reply);
   }
@@ -132,7 +136,8 @@ export class CoreLoginController {
   @Post('select-scope')
   @HttpCode(200)
   @ApiHeader({ name: 'x-csrf-token', required: true })
-  @ApiOperation({ summary: 'POST /select-scope - { role_id, scope_type, scope_id } -> { active_scope, token }' })
+  @UseFilters(LoginEnvelopeFilter)
+  @ApiOperation({ summary: 'POST /select-scope - { role_id, scope_type, scope_id } -> login envelope for the chosen role' })
   selectScope(@Body() dto: SelectScopeDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest) {
     return this.portalLogin.selectScope(dto, csrf, req);
   }
