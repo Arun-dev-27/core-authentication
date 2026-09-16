@@ -1,0 +1,157 @@
+# Render Blueprint - DEVELOPMENT environment for the three Miqaat Core repos.
+# Every service tracks the `develop` branch. Apply with: Render Dashboard -> New -> Blueprint.
+#
+# NOTE ON PLANS: Render allows only ONE free PostgreSQL instance per workspace. authn and authz
+# cannot share an instance (both create tables in `public`, both use a `schema_migrations` table),
+# so the second database below must move to `plan: basic-256mb` (~$7/mo) or the blueprint is rejected.
+#
+# NOTE ON KEYS: free instances have no persistent disk, so authn regenerates its RS256 keyset on
+# every deploy (JWKS changes, previously issued assertions stop verifying). Fine for dev; for a
+# stable keyset set SIGNING_KEY_PROVIDER=secretsmanager with real AWS credentials.
+
+databases:
+  - name: miqaat-auth-db
+    databaseName: miqaat_auth
+    user: miqaat_auth
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+  - name: miqaat-authz-db
+    databaseName: miqaat_authz
+    user: miqaat_authz
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    ipAllowList: []
+
+services:
+  - type: keyvalue
+    name: miqaat-cache
+    plan: free
+    region: singapore
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  # ---------------------------------------------------------------- authentication
+  - type: web
+    name: miqaat-core-authentication
+    runtime: node
+    repo: https://github.com/Arun-dev-27/core-authentication
+    branch: develop
+    region: singapore
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: npm ci && npm run build
+    startCommand: >-
+      sh -c '[ -f .keys/signing-keys.json ] || npm run keys:generate;
+      npm run migration:run:prod && npm run start'
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: LOG_LEVEL
+        value: info
+      - key: TRUST_PROXY
+        value: "true"
+      - key: SWAGGER_ENABLED
+        value: "true"
+      - key: ISSUER
+        value: https://miqaat-core-authentication.onrender.com
+      - key: AUTH_DB_HOST
+        fromDatabase: { name: miqaat-auth-db, property: host }
+      - key: AUTH_DB_PORT
+        fromDatabase: { name: miqaat-auth-db, property: port }
+      - key: AUTH_DB_USER
+        fromDatabase: { name: miqaat-auth-db, property: user }
+      - key: AUTH_DB_PASSWORD
+        fromDatabase: { name: miqaat-auth-db, property: password }
+      - key: AUTH_DB_NAME
+        fromDatabase: { name: miqaat-auth-db, property: database }
+      # Internal hostname, private network: TypeORM is configured with rejectUnauthorized=true,
+      # which Render's internal certificate does not satisfy, so SSL stays off.
+      - key: AUTH_DB_SSL
+        value: "false"
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: miqaat-cache, property: connectionString }
+      - key: AUTHZ_BASE_URL
+        value: https://miqaat-core-authorization.onrender.com
+      - key: SIGNING_KEY_PROVIDER
+        value: file
+      - key: SIGNING_KEYS_FILE
+        value: ./.keys/signing-keys.json
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAMESITE
+        value: None
+      - key: PORTAL_ENVIRONMENT
+        value: DEV
+
+  # ---------------------------------------------------------------- authorization
+  - type: web
+    name: miqaat-core-authorization
+    runtime: node
+    repo: https://github.com/Arun-dev-27/core-authorization
+    branch: develop
+    region: singapore
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: npm ci && npm run build
+    startCommand: npm run migration:run:prod && npm run start
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: LOG_LEVEL
+        value: info
+      - key: TRUST_PROXY
+        value: "true"
+      - key: SWAGGER_ENABLED
+        value: "true"
+      - key: AUTHZ_DB_HOST
+        fromDatabase: { name: miqaat-authz-db, property: host }
+      - key: AUTHZ_DB_PORT
+        fromDatabase: { name: miqaat-authz-db, property: port }
+      - key: AUTHZ_DB_USER
+        fromDatabase: { name: miqaat-authz-db, property: user }
+      - key: AUTHZ_DB_PASSWORD
+        fromDatabase: { name: miqaat-authz-db, property: password }
+      - key: AUTHZ_DB_NAME
+        fromDatabase: { name: miqaat-authz-db, property: database }
+      - key: AUTHZ_DB_SSL
+        value: "false"
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: miqaat-cache, property: connectionString }
+      - key: IDENTITY_ISSUER
+        value: https://miqaat-core-authentication.onrender.com
+      - key: IDENTITY_JWKS_URI
+        value: https://miqaat-core-authentication.onrender.com/.well-known/jwks.json
+      - key: AUTHZ_ISSUER
+        value: https://miqaat-core-authorization.onrender.com
+      - key: ALLOW_INSECURE_LOCALHOST_URIS
+        value: "false"
+      - key: AUDIT_ALLOW_DECISIONS
+        value: "false"
+
+  # ---------------------------------------------------------------- embed demo (static)
+  # core-embed-login is a library (miqaat-core-embed-react); the deployable artefact is its
+  # example/ host app, so the lib is built first and example/ consumes it via `file:..`.
+  - type: web
+    name: miqaat-core-embed-login
+    runtime: static
+    repo: https://github.com/Arun-dev-27/core-embed-login
+    branch: develop
+    region: singapore
+    autoDeploy: true
+    buildCommand: npm ci && npm run build && cd example && npm install && npm run build
+    staticPublishPath: example/dist
+    envVars:
+      - key: VITE_CORE_BASE_URL
+        value: https://miqaat-core-authentication.onrender.com
+      - key: VITE_AUTHORIZATION_BASE_URL
+        value: https://miqaat-core-authorization.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
