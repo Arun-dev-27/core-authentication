@@ -11,6 +11,7 @@ import { PinoNestLogger, createLogger, genRequestId } from '@common/logging/logg
 import { requestContext } from '@common/logging/request-context';
 import { LogoutService } from '@modules/federation/services/logout.service';
 import { AppModule } from './app.module';
+import { configureClientIpHeader } from '@common/security/session-binding';
 
 export function buildOpenApiConfig() {
   return new DocumentBuilder()
@@ -34,6 +35,10 @@ export async function createApp(env: Env = loadEnv()): Promise<NestFastifyApplic
     requestIdHeader: false,
     bodyLimit: 64 * 1024,
   });
+
+  // Set before any request is served, so session binding reads the same source everywhere.
+
+  configureClientIpHeader(env.CLIENT_IP_HEADER ?? null);
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, { bufferLogs: true });
   app.useLogger(new PinoNestLogger(logger));

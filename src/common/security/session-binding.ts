@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { FastifyRequest } from 'fastify';
 
 /**
@@ -37,7 +38,40 @@ export type SessionBindingResult = { ok: true } | { ok: false; reason: SessionBi
  * behind our trusted proxy cannot move this value by sending its own `X-Forwarded-For`. Parsing that
  * header here instead would trust exactly the input an attacker controls, which is why we never do.
  */
+/**
+ * Optional edge header the client IP is read from, set once at startup from CLIENT_IP_HEADER.
+ *
+ * Module state rather than a threaded parameter on purpose: this is start-up configuration, and
+ * keeping it here means every existing `bindingContextOf(req)` call site enforces the same rule
+ * without being rewritten (and without any of them being able to opt out).
+ */
+let clientIpHeader: string | null = null;
+
+/** Called once from bootstrap, before the server accepts traffic. */
+export function configureClientIpHeader(name: string | null): void {
+  clientIpHeader = name ? name.toLowerCase() : null;
+}
+
+/**
+ * The request's client IP.
+ *
+ * With CLIENT_IP_HEADER set, that header wins. This is ONLY safe for a header the edge proxy
+ * overwrites on every request (Cloudflare's `cf-connecting-ip`); for anything a client may
+ * append to, it would hand the client control of its own identity.
+ *
+ * Otherwise this reads Fastify's `req.ip`, which resolves X-Forwarded-For only as far as
+ * TRUST_PROXY allows; with TRUST_PROXY unset it is the raw socket peer. Parsing X-Forwarded-For
+ * here directly would trust exactly the input an attacker controls, which is why we never do.
+ */
 export function requestIp(req: FastifyRequest): string | null {
+  if (clientIpHeader) {
+    const raw = req.headers[clientIpHeader];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    // Take the first entry in case the edge writes a list; a single address is the normal case.
+    const first = typeof value === 'string' ? value.split(',')[0] : undefined;
+    const fromHeader = normalizeIp(first);
+    if (fromHeader) return fromHeader;
+  }
   return normalizeIp(req.ip);
 }
 
@@ -62,9 +96,11 @@ export function normalizeIp(value: unknown): string | null {
   if (zone !== -1) ip = ip.slice(0, zone);
   if (ip.startsWith('[') && ip.endsWith(']')) ip = ip.slice(1, -1);
   const mappedV4 = /^(?:::ffff:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
-  if (mappedV4) return mappedV4[1];
-  if (ip === '::1') return '127.0.0.1';
-  return ip;
+  if (mappedV4) ip = mappedV4[1];
+  else if (ip === '::1') ip = '127.0.0.1';
+  // Validated, not merely tidied: anything that is not a real address is rejected, so a garbage
+  // CLIENT_IP_HEADER falls back to req.ip instead of becoming a comparable "IP" of its own.
+  return isIP(ip) === 0 ? null : ip;
 }
 
 export function normalizeUserAgent(value: unknown): string | null {

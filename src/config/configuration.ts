@@ -73,6 +73,16 @@ export const envSchema = z
     PORT: z.coerce.number().int().positive().default(3001),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
     TRUST_PROXY: trustProxy,
+    /**
+     * Header carrying the real client IP, when an edge proxy provides one it overwrites on every
+     * request (Cloudflare, and therefore Render: `cf-connecting-ip`). Leave unset when the service
+     * is not behind such an edge; a header a client can append to must never be used here.
+     */
+    CLIENT_IP_HEADER: z
+      .string()
+      .regex(/^[a-z0-9-]{3,64}$/i)
+      .optional()
+      .transform((v) => (v ? v.toLowerCase() : undefined)),
     SWAGGER_ENABLED: bool.default('true'),
 
     ISSUER: z.string().url(),

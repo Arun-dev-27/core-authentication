@@ -1,5 +1,7 @@
 import {
   USER_AGENT_MAX_LENGTH,
+  configureClientIpHeader,
+  requestIp,
   bindingAuditMetadata,
   checkSessionBinding,
   maskIp,
@@ -73,6 +75,8 @@ describe('normalisation', () => {
     expect(normalizeIp('[2001:db8::1]')).toBe('2001:db8::1');
     expect(normalizeIp('::1')).toBe('127.0.0.1');
     expect(normalizeIp('')).toBeNull();
+    expect(normalizeIp('nonsense')).toBeNull();
+    expect(normalizeIp('999.1.1.1')).toBeNull();
     expect(normalizeIp(undefined)).toBeNull();
   });
 
@@ -105,5 +109,36 @@ describe('log redaction', () => {
     expect(serialised).not.toContain(UA);
     expect(serialised).not.toContain('PostmanRuntime/7.39.0');
     expect(meta).toMatchObject({ reason: 'IP_MISMATCH', stored_ip: '203.0.113.x', current_ip: '198.51.100.x' });
+  });
+});
+
+describe('requestIp', () => {
+  const req = (headers: Record<string, unknown>, ip = '10.0.0.1') => ({ headers, ip }) as never;
+  afterEach(() => configureClientIpHeader(null));
+
+  it('uses Fastify req.ip when no edge header is configured', () => {
+    expect(requestIp(req({ 'cf-connecting-ip': '203.0.113.7' }, '10.0.0.1'))).toBe('10.0.0.1');
+  });
+
+  it('prefers the configured edge header', () => {
+    configureClientIpHeader('CF-Connecting-IP');
+    expect(requestIp(req({ 'cf-connecting-ip': '203.0.113.7' }, '10.0.0.1'))).toBe('203.0.113.7');
+  });
+
+  it('falls back to req.ip when the edge header is absent or unusable', () => {
+    configureClientIpHeader('cf-connecting-ip');
+    expect(requestIp(req({}, '10.0.0.1'))).toBe('10.0.0.1');
+    expect(requestIp(req({ 'cf-connecting-ip': 'not-an-ip' }, '10.0.0.1'))).toBe('10.0.0.1');
+  });
+
+  it('takes the first entry if the edge writes a list', () => {
+    configureClientIpHeader('cf-connecting-ip');
+    expect(requestIp(req({ 'cf-connecting-ip': '203.0.113.7, 10.0.0.9' }, '10.0.0.1'))).toBe('203.0.113.7');
+  });
+
+  it('ignores X-Forwarded-For entirely; only req.ip or the configured header are read', () => {
+    expect(requestIp(req({ 'x-forwarded-for': '9.9.9.9' }, '10.0.0.1'))).toBe('10.0.0.1');
+    configureClientIpHeader('cf-connecting-ip');
+    expect(requestIp(req({ 'x-forwarded-for': '9.9.9.9', 'cf-connecting-ip': '203.0.113.7' }, '10.0.0.1'))).toBe('203.0.113.7');
   });
 });
