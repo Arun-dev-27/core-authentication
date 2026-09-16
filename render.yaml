@@ -53,8 +53,10 @@ services:
         value: development
       - key: LOG_LEVEL
         value: info
+      # Hop count, not "true": "true" would make Fastify read the client-supplied left-most
+      # X-Forwarded-For, which session IP binding must never trust. Render puts one proxy in front.
       - key: TRUST_PROXY
-        value: "true"
+        value: "1"
       - key: SWAGGER_ENABLED
         value: "true"
       - key: ISSUER
@@ -105,8 +107,10 @@ services:
         value: development
       - key: LOG_LEVEL
         value: info
+      # Hop count, not "true": "true" would make Fastify read the client-supplied left-most
+      # X-Forwarded-For, which session IP binding must never trust. Render puts one proxy in front.
       - key: TRUST_PROXY
-        value: "true"
+        value: "1"
       - key: SWAGGER_ENABLED
         value: "true"
       - key: AUTHZ_DB_HOST
