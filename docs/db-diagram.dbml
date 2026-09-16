@@ -1,0 +1,188 @@
+// core-authentication (miqaat-identity-federation-service) - PostgreSQL, schema `public`
+// Paste into https://dbdiagram.io
+//
+// Reflects the schema AFTER all three migrations:
+//   1789300000000-InitAuthenticationSchema
+//   1789500000000-UsersTableWithPassword   <- renames auth_users -> users, drops its uuid `id`
+//                                             and re-keys sessions/mfa/attempts on its_id
+//   1789600000000-AuthClients              <- the local federation client registry
+//
+// Not in Postgres: login transactions, the federation session handle index and rate-limit counters
+// live in Redis (see common/constants/redis-keys.constants.ts). Signing key MATERIAL is never here
+// either - only key metadata; the private keys sit in the SIGNING_KEY_PROVIDER.
+
+Table users {
+  its_id               varchar(64) [pk, note: 'ITS ID, or NITS-xxxxxxxx for a Non-ITS member']
+  identity_type        varchar(16) [not null, default: 'ITS', note: 'ITS | NON_ITS']
+  username             varchar(256) [not null, unique, note: 'forced lower-case by CHECK']
+  name                 varchar(256) [note: 'was display_name']
+  email                varchar(320)
+  password_hash        text [note: 'scrypt; NULL when the account authenticates only via legacy MHP']
+  password_algo        varchar(32)
+  credential_source    varchar(32) [not null, default: 'LOCAL', note: 'LOCAL | LEGACY_MHP_MIGRATED | EXTERNAL']
+  legacy_user_id       integer [unique, note: 'uq_auth_users_legacy - FK into the external MHP_User_Login, one row each']
+  status               varchar(16) [not null, default: 'ACTIVE', note: 'ACTIVE | LOCKED | DISABLED (was account_status)']
+  failed_login_count   integer [not null, default: 0]
+  locked_until         timestamptz
+  last_login_at        timestamptz
+  last_failed_login_at timestamptz
+  password_changed_at  timestamptz
+  mfa_enabled          boolean [not null, default: false]
+  created_at           timestamptz [not null, default: `now()`]
+  updated_at           timestamptz [not null, default: `now()`]
+
+  Note: 'Credential store. its_id is the primary key, so every child table joins on it rather than a surrogate uuid.'
+}
+
+Table auth_sessions {
+  sid                 varchar(64) [pk, note: 'non-secret session id; travels in assertions and logout tokens']
+  its_id              varchar(64) [not null, ref: > users.its_id, note: 'ON DELETE CASCADE']
+  auth_method         varchar(32) [not null, note: 'e.g. password']
+  created_at          timestamptz [not null, default: `now()`]
+  expires_at          timestamptz [not null, note: 'sliding idle expiry']
+  absolute_expires_at timestamptz [not null, note: 'hard cap, never extended']
+  last_seen_at        timestamptz
+  revoked_at          timestamptz
+  revoke_reason       varchar(64)
+  ip_address          varchar(64) [note: 'session binding: compared on every request']
+  user_agent          varchar(512) [note: 'session binding: compared on every request']
+  updated_at          timestamptz
+
+  indexes {
+    (its_id, created_at) [name: 'idx_auth_sessions_its']
+    its_id [name: 'idx_auth_sessions_active']
+  }
+  Note: 'Durable record of the central federation session. The cookie carries only an opaque handle; its SHA-256 indexes the live copy in Redis, so knowing a sid never hijacks a session.'
+}
+
+Table auth_session_clients {
+  id                 bigserial [pk]
+  sid                varchar(64) [not null, ref: > auth_sessions.sid, note: 'ON DELETE CASCADE']
+  client_id          varchar(64) [not null, note: 'logical client_id; no FK - a session may outlive a client row']
+  first_assertion_at timestamptz [not null, default: `now()`]
+  last_assertion_at  timestamptz [not null, default: `now()`]
+  assertion_count    integer [not null, default: 1]
+  logout_status      varchar(16) [note: 'PENDING | SUCCEEDED | FAILED | NO_ENDPOINT']
+  logout_at          timestamptz
+  created_at         timestamptz
+  updated_at         timestamptz
+
+  indexes {
+    (sid, client_id) [unique]
+  }
+  Note: 'Which clients received an assertion under this session - the fan-out list for back-channel logout.'
+}
+
+Table auth_mfa_factors {
+  id           uuid [pk, default: `gen_random_uuid()`]
+  its_id       varchar(64) [not null, ref: > users.its_id, note: 'ON DELETE CASCADE']
+  factor_type  varchar(16) [not null, note: 'TOTP | SMS | EMAIL | WEBAUTHN']
+  secret_ref   varchar(512) [note: 'pointer into the secret store, never the secret itself']
+  status       varchar(16) [not null, default: 'PENDING', note: 'PENDING | ACTIVE | DISABLED']
+  created_at   timestamptz [not null, default: `now()`]
+  last_used_at timestamptz
+  updated_at   timestamptz
+}
+
+Table auth_login_attempts {
+  id              bigserial [pk]
+  identifier_hash char(64) [not null, note: 'sha256 of the submitted identifier - never the identifier']
+  its_id          varchar(64) [note: 'set once resolved; no FK, attempts are kept for unknown identifiers too']
+  client_id       varchar(64)
+  ip_address      varchar(64)
+  success         boolean [not null]
+  failure_reason  varchar(64)
+  correlation_id  varchar(128)
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz
+
+  indexes {
+    (identifier_hash, created_at) [name: 'idx_login_attempts_identifier']
+    (ip_address, created_at) [name: 'idx_login_attempts_ip']
+    (its_id, created_at) [name: 'idx_login_attempts_its']
+  }
+  Note: 'Forensic trail. The live throttling counters are in Redis under ratelimit:login:*, not here.'
+}
+
+Table auth_audit_events {
+  id             bigserial [pk]
+  event_type     varchar(64) [not null]
+  outcome        varchar(16) [not null, note: 'SUCCESS | FAILURE | INFO']
+  its_id         varchar(64) [note: 'no FK: an audit row must survive the user being deleted']
+  sid            varchar(64) [note: 'no FK, same reason']
+  client_id      varchar(64)
+  jti            varchar(64)
+  ip_address     varchar(64)
+  user_agent     varchar(512)
+  correlation_id varchar(128)
+  metadata       jsonb [note: 'masked only - no cookie, token, password or full User-Agent']
+  created_at     timestamptz [not null, default: `now()`]
+  updated_at     timestamptz
+
+  indexes {
+    (its_id, created_at) [name: 'idx_auth_audit_its']
+    (event_type, created_at) [name: 'idx_auth_audit_event']
+    sid [name: 'idx_auth_audit_sid']
+  }
+}
+
+Table signing_key_metadata {
+  kid               varchar(128) [pk]
+  alg               varchar(16) [not null, note: 'RS256']
+  status            varchar(16) [not null, note: 'NEXT | ACTIVE | RETIRING | RETIRED']
+  jwk_thumbprint    varchar(64)
+  first_seen_at     timestamptz [not null, default: `now()`]
+  status_changed_at timestamptz [not null, default: `now()`]
+  created_at        timestamptz
+  updated_at        timestamptz
+
+  Note: 'Rotation bookkeeping only. Private keys live in the SIGNING_KEY_PROVIDER (file in dev, AWS Secrets Manager / SSM in production); public keys are published via GET /.well-known/jwks.json.'
+}
+
+Table auth_clients {
+  id                  uuid [pk, default: `gen_random_uuid()`]
+  client_id           varchar(64) [not null, unique, note: 'e.g. rms-web-dev; CHECK ^[a-z0-9][a-z0-9-]{2,63}$']
+  name                varchar(255) [not null]
+  application_code    varchar(64) [not null]
+  application_name    varchar(255) [not null]
+  business_unit       varchar(255)
+  utility             varchar(255)
+  environment         varchar(32) [not null]
+  client_type         varchar(16) [not null, default: 'WEB', note: 'WEB | SPA | MOBILE | SERVICE']
+  authentication_mode varchar(24) [not null, note: 'EMBEDDED | REDIRECT | EMBEDDED_OR_REDIRECT']
+  status              varchar(24) [not null, default: 'PENDING', note: 'PENDING | SECURITY_REVIEW | ACTIVE | SUSPENDED | RETIRED']
+  initiate_login_uri  varchar(2048)
+  created_at          timestamptz [not null, default: `now()`]
+  updated_at          timestamptz [not null, default: `now()`]
+
+  Note: 'The federation client registry, owned by THIS service on the local-client-registry branch. core-authentication no longer asks core-authorization to resolve a client, so an "Unknown client" 400 from POST /v1/auth/transaction means the row is missing here.'
+}
+
+Table auth_client_origins {
+  id         uuid [pk, default: `gen_random_uuid()`]
+  client_ref uuid [not null, ref: > auth_clients.id, note: 'ON DELETE CASCADE']
+  origin     varchar(512) [not null, note: 'exact origin; CHECK rejects any *']
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (client_ref, origin) [unique]
+    client_ref [name: 'idx_auth_client_origins_client']
+  }
+  Note: 'Allowed embed origins. Matched by exact canonical equality - no wildcard, prefix or suffix matching anywhere. With more than one row for a client, a transaction must name which origin it wants.'
+}
+
+Table auth_client_callbacks {
+  id         uuid [pk, default: `gen_random_uuid()`]
+  client_ref uuid [not null, ref: > auth_clients.id, note: 'ON DELETE CASCADE']
+  uri        varchar(2048) [not null, note: 'CHECK rejects any *']
+  uri_type   varchar(32) [not null, note: 'CALLBACK | BACK_CHANNEL_LOGOUT | POST_LOGOUT_REDIRECT']
+  is_primary boolean [not null, default: false]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (client_ref, uri, uri_type) [unique]
+    client_ref [name: 'idx_auth_client_callbacks_client']
+    client_ref [unique, name: 'uq_auth_client_single_backchannel (partial: uri_type = BACK_CHANNEL_LOGOUT)']
+  }
+  Note: 'Redirect and logout URIs. The partial unique index allows at most one BACK_CHANNEL_LOGOUT per client.'
+}
