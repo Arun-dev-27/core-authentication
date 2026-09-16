@@ -4,13 +4,20 @@
  * rms-web-dev configuration this project has been using throughout local development and testing,
  * now owned here instead of read from core-authorization.
  *
+ * Only :5175 (the core-embed-react example app) is a real, currently-used origin. :3000 and :4001 were
+ * carried over from the original catalog seed and the now-deleted example/server/ legacy backend
+ * respectively - removed from here (and from the live registry) since nothing serves either port anymore.
+ * This script only ever adds rows (ON CONFLICT DO NOTHING); it never removes ones a prior run already
+ * created, so an existing dev database with stale origins needs `npm run client -- origins remove ...`
+ * to actually clean up (see HANDOFF.md).
+ *
  *   npm run seed:clients
  */
 import 'reflect-metadata';
 import dataSource from '@core/database/data-source';
 
 const CLIENT_ID = 'rms-web-dev';
-const ORIGINS = ['http://localhost:3000', 'http://localhost:4001', 'http://localhost:5175'];
+const ORIGINS = ['http://localhost:5175'];
 const CALLBACKS: { uri: string; uri_type: 'CALLBACK' | 'BACK_CHANNEL_LOGOUT' | 'POST_LOGOUT_REDIRECT'; is_primary: boolean }[] = [
   { uri: 'http://localhost:4001/auth/core/callback', uri_type: 'CALLBACK', is_primary: true },
   { uri: 'http://localhost:4001/auth/core/logout', uri_type: 'BACK_CHANNEL_LOGOUT', is_primary: true },
