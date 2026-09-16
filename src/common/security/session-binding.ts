@@ -28,6 +28,28 @@ export interface SessionBindingContext {
 
 export type SessionBindingFailure = 'IP_MISMATCH' | 'USER_AGENT_MISMATCH' | 'BINDING_MISSING';
 
+/**
+ * Which factors a session is pinned to.
+ *
+ *   'ip+ua'  both the originating IP and the User-Agent must match (the default).
+ *   'ua'     User-Agent only. For platforms that never hand the application a trustworthy client
+ *            IP: Render sits behind Cloudflare and exposes only a Cloudflare edge address, which is
+ *            shared by unrelated clients and changes between requests -- pinning to it rejects the
+ *            legitimate user while doing nothing to stop a thief on that same edge.
+ */
+export type SessionBindingMode = 'ip+ua' | 'ua';
+
+let bindingMode: SessionBindingMode = 'ip+ua';
+
+/** Called once from bootstrap, before the server accepts traffic. */
+export function configureSessionBinding(mode: SessionBindingMode): void {
+  bindingMode = mode;
+}
+
+export function sessionBindingMode(): SessionBindingMode {
+  return bindingMode;
+}
+
 export type SessionBindingResult = { ok: true } | { ok: false; reason: SessionBindingFailure };
 
 /**
@@ -127,8 +149,12 @@ export function checkSessionBinding(stored: StoredSessionBinding, current: Sessi
   const currentIp = normalizeIp(current.ip);
   const currentUserAgent = normalizeUserAgent(current.userAgent);
 
-  if (!storedIp || !storedUserAgent || !currentIp || !currentUserAgent) return { ok: false, reason: 'BINDING_MISSING' };
-  if (!equalsConstantTime(storedIp, currentIp)) return { ok: false, reason: 'IP_MISMATCH' };
+  // The User-Agent is required in both modes; the IP only when it is part of the binding.
+  if (!storedUserAgent || !currentUserAgent) return { ok: false, reason: 'BINDING_MISSING' };
+  if (bindingMode === 'ip+ua') {
+    if (!storedIp || !currentIp) return { ok: false, reason: 'BINDING_MISSING' };
+    if (!equalsConstantTime(storedIp, currentIp)) return { ok: false, reason: 'IP_MISMATCH' };
+  }
   if (!equalsConstantTime(storedUserAgent, currentUserAgent)) return { ok: false, reason: 'USER_AGENT_MISMATCH' };
   return { ok: true };
 }

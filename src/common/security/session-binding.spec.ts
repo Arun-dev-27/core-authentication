@@ -1,6 +1,7 @@
 import {
   USER_AGENT_MAX_LENGTH,
   configureClientIpHeader,
+  configureSessionBinding,
   requestIp,
   bindingAuditMetadata,
   checkSessionBinding,
@@ -140,5 +141,34 @@ describe('requestIp', () => {
     expect(requestIp(req({ 'x-forwarded-for': '9.9.9.9' }, '10.0.0.1'))).toBe('10.0.0.1');
     configureClientIpHeader('cf-connecting-ip');
     expect(requestIp(req({ 'x-forwarded-for': '9.9.9.9', 'cf-connecting-ip': '203.0.113.7' }, '10.0.0.1'))).toBe('203.0.113.7');
+  });
+});
+
+describe("SESSION_BINDING='ua' (platform without a trustworthy client IP)", () => {
+  const UA2 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0';
+  const bound = { ipAddress: '203.0.113.7', userAgent: UA2 };
+  beforeEach(() => configureSessionBinding('ua'));
+  afterEach(() => configureSessionBinding('ip+ua'));
+
+  it('still requires the User-Agent to match', () => {
+    expect(checkSessionBinding(bound, { ip: '203.0.113.7', userAgent: 'curl/8.4.0' })).toEqual({ ok: false, reason: 'USER_AGENT_MISMATCH' });
+  });
+
+  it('tolerates a changed IP, which is the whole point of the mode', () => {
+    expect(checkSessionBinding(bound, { ip: '198.51.100.9', userAgent: UA2 })).toEqual({ ok: true });
+  });
+
+  it('tolerates a session recorded without an IP at all', () => {
+    expect(checkSessionBinding({ ipAddress: null, userAgent: UA2 }, { ip: null, userAgent: UA2 })).toEqual({ ok: true });
+  });
+
+  it('still fails closed when the User-Agent is missing on either side', () => {
+    expect(checkSessionBinding({ ipAddress: null, userAgent: null }, { ip: null, userAgent: UA2 })).toEqual({ ok: false, reason: 'BINDING_MISSING' });
+    expect(checkSessionBinding(bound, { ip: null, userAgent: null })).toEqual({ ok: false, reason: 'BINDING_MISSING' });
+  });
+
+  it("does not weaken 'ip+ua', which remains the default", () => {
+    configureSessionBinding('ip+ua');
+    expect(checkSessionBinding(bound, { ip: '198.51.100.9', userAgent: UA2 })).toEqual({ ok: false, reason: 'IP_MISMATCH' });
   });
 });

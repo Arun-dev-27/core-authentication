@@ -72,6 +72,12 @@ export const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3001),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+    /**
+     * Factors a session cookie is pinned to. Keep 'ip+ua' wherever the platform gives the app the
+     * real client IP. Use 'ua' behind an edge that does not (Render/Cloudflare), where the visible
+     * address is a shared, rotating edge IP.
+     */
+    SESSION_BINDING: z.enum(['ip+ua', 'ua']).default('ip+ua'),
     TRUST_PROXY: trustProxy,
     /**
      * Header carrying the real client IP, when an edge proxy provides one it overwrites on every
