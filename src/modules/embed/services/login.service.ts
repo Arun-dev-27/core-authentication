@@ -95,6 +95,9 @@ export class LoginService {
       return { session, handle, cookieMaxAge };
     }
     const delivery = await this.issueForTransaction(txn, session, 'password');
+    // Embedded login continues with workspace selection, which reuses this transaction's CSRF token:
+    // bind it to the new session so it lives as long as the session instead of TRANSACTION_TTL_SECONDS.
+    await this.transactions.bindToSession(txn.transaction_id, session, true);
     return { session, handle, cookieMaxAge, delivery };
   }
 
@@ -114,6 +117,7 @@ export class LoginService {
     }
     const cookieMaxAge = await this.sessions.touch(session);
     const delivery = await this.issueForTransaction(txn, session, 'sso');
+    await this.transactions.bindToSession(txn.transaction_id, session, true);
     return { session, cookieMaxAge, delivery };
   }
 

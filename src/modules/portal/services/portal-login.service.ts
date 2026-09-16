@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AppConfig } from '@config/config.module';
 import { DomainError, Errors } from '@common/errors/domain-error';
-import { safeEqual } from '@common/utils/crypto.util';
+import { randomToken, safeEqual } from '@common/utils/crypto.util';
 import { canonicalOrigin } from '@common/utils/origin.util';
 import { AuditService } from '@core/audit/audit.service';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
@@ -156,6 +156,19 @@ export class PortalLoginService {
       ip,
       metadata: { ...claim, role_name: resolved.active_scope.role_name, audience: audienceName },
     });
+    // The Authorization service keeps the durable record of this signed-in session (its Control Panel model).
+    // Best effort: a failure there is logged by the client and never costs the user their sign-in.
+    await this.authz.recordSession({
+      its_id: session.its_id,
+      ...claim,
+      core_sid: session.sid,
+      aud: audience,
+      // Opaque and random: the local session record is never keyed by a token that is also a credential.
+      session_token: randomToken(32),
+      expires_at: session.absolute_expires_at,
+      ip_address: ip,
+    });
+
     return {
       active_scope: resolved.active_scope,
       token: issued.token,

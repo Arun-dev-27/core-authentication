@@ -10,7 +10,11 @@ export interface LoginTransaction {
   /** Exact registered callback (page/form_post fallback). */
   callback_uri: string | null;
   csrf: string;
-  /** Portal only: federation session this transaction's CSRF token is bound to once the user is signed in. */
+  /**
+   * Federation session this transaction's CSRF token is bound to once the user is signed in.
+   * Set for the Core Portal and, after an assertion is issued, for embedded login too, whose
+   * workspace-selection step reuses the same CSRF token.
+   */
   sid?: string | null;
   status: 'PENDING' | 'COMPLETED';
   created_at: string;

@@ -3,6 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { AuditService } from '@core/audit/audit.service';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
+import { AuthzClient } from '@modules/authorization-client/services/authz-client.service';
 import { ClientRegistry } from '@modules/clients/services/client-registry.service';
 import { FederationSessionService } from '@modules/sessions/services/federation-session.service';
 
@@ -26,6 +27,7 @@ export class LogoutService {
     private readonly registry: ClientRegistry,
     private readonly assertions: AssertionService,
     private readonly audit: AuditService,
+    private readonly authz: AuthzClient,
     @InjectDataSource() private readonly db: DataSource,
   ) {}
 
@@ -33,6 +35,8 @@ export class LogoutService {
     const revoked = await this.sessions.revoke(sid, reason);
     if (!revoked) return null;
     await this.audit.record({ eventType: 'FEDERATION_LOGOUT', outcome: 'SUCCESS', itsId: revoked.its_id, sid, ip: meta.ip, metadata: { reason, clients: revoked.clients } });
+    // Refuse this session's access tokens in the Authorization service as well, not only its cookie here.
+    this.track(this.authz.revokeSession(sid));
     this.track(this.fanOut(revoked));
     return revoked;
   }
@@ -41,6 +45,7 @@ export class LogoutService {
     const revoked = await this.sessions.revokeAllForUser(itsId, reason);
     for (const session of revoked) {
       await this.audit.record({ eventType: 'FEDERATION_LOGOUT', outcome: 'SUCCESS', itsId, sid: session.sid, metadata: { reason, clients: session.clients } });
+      this.track(this.authz.revokeSession(session.sid));
       this.track(this.fanOut(session));
     }
     return revoked;

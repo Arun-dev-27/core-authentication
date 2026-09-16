@@ -12,6 +12,17 @@ import {
   WorkspaceList,
 } from '@shared/types/federation-client.types';
 
+/** One signed-in session, as recorded in the Authorization service. `session_token` is a hash, never a token. */
+export interface RecordedSessionInput extends ActiveScopeClaim {
+  its_id: string;
+  core_sid: string;
+  aud: string;
+  session_token: string;
+  expires_at: string;
+  ip_address?: string | null;
+  user_agent?: string | null;
+}
+
 /**
  * HTTP client for the Authorization service. Every request carries a freshly minted, single-use RS256
  * service token (verified there against our JWKS) - there is no API key.
@@ -55,6 +66,33 @@ export class AuthzClient {
   async syncUser(profile: UserProfileSync): Promise<void> {
     const res = await this.request('POST', '/users/sync', profile);
     await this.json(res);
+  }
+
+  /**
+   * Records a signed-in session (workspace selected) in the Authorization service's Control Panel model.
+   * Best effort by design: signing in must succeed even when that write cannot be made. The session itself
+   * stays owned by this service - what travels is the sid, the audience and a hash of the issued token.
+   */
+  async recordSession(session: RecordedSessionInput): Promise<void> {
+    try {
+      const res = await this.request('POST', '/internal/federation/sessions', session);
+      if (!res.ok) this.logger.warn({ msg: 'authorization service refused the session record', sid: session.core_sid, status: res.status });
+    } catch (error) {
+      this.logger.warn({ msg: 'authorization service unreachable for session recording', sid: session.core_sid, err: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /**
+   * Tells the Authorization service that a session ended, so access tokens carrying its `sid` are refused there too.
+   * Best effort by design: signing out must succeed even when the Authorization service is unavailable.
+   */
+  async revokeSession(sid: string): Promise<void> {
+    try {
+      const res = await this.request('POST', `/internal/federation/sessions/${encodeURIComponent(sid)}/revoke`);
+      if (!res.ok) this.logger.warn({ msg: 'authorization service refused the session revocation', sid, status: res.status });
+    } catch (error) {
+      this.logger.warn({ msg: 'authorization service unreachable for session revocation', sid, err: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<Response> {

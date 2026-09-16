@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { createLocalJWKSet, decodeJwt, decodeProtectedHeader, jwtVerify } from 'jose';
 import { DataSource } from 'typeorm';
 import { loadEnv } from '@config/configuration';
+import { Errors } from '@common/errors/domain-error';
 import { buildDataSourceOptions } from '@core/database/data-source-options';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
 import { AuthzClient } from '@modules/authorization-client/services/authz-client.service';
@@ -144,6 +145,7 @@ beforeAll(async () => {
   jest.spyOn(authz, 'syncUser').mockResolvedValue();
   jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
   jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
+  jest.spyOn(authz, 'recordSession').mockResolvedValue();
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
 });
@@ -494,6 +496,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     const authz = app.get(AuthzClient);
     jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
+    jest.spyOn(authz, 'recordSession').mockResolvedValue();
   });
 
   it('signs single-use service tokens for the Authorization service with the federation signing key', async () => {
@@ -780,6 +783,7 @@ describe('embedded login envelope (same pattern as the Core Portal login)', () =
     const authz = app.get(AuthzClient);
     jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
+    jest.spyOn(authz, 'recordSession').mockResolvedValue();
   });
 
   it('single role: SINGLE with active_role, modules and permissions; the assertion stays identity-only', async () => {
@@ -820,5 +824,158 @@ describe('embedded login envelope (same pattern as the Core Portal login)', () =
     expect(cont.statusCode).toBe(200);
     expect(cont.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', audience: 'ams-web-test', role_type: 'MULTI', roles: expect.any(Array), delivery: { type: 'MIQAAT_AUTH_SUCCESS', transaction_id: second.txn, target_origin: AMS } } });
     expect(decodeJwt(cont.json().session.token)).toMatchObject({ aud: 'ams-web-test', sub: 'ITS12345' });
+  });
+});
+
+/**
+ * Embedded login step 2: the local session (miqaat_core.user_sessions) is created only once a workspace
+ * and role have been validated against the database, never from values the browser asserts.
+ */
+describe('embedded login workspace selection and the local session', () => {
+  const BU_ID = '2c3d4e5f-6071-4c8d-8e9f-1a2b3c4d5e6f';
+  const UT_ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+  const BU_ROLE = { role_id: '7c2d4e3f-9b4e-4b6c-8d2f-3e4f5a6b7c8d', role_name: 'Business Unit Admin', scope_type: 'BUSINESS_UNIT' as const, scope_id: BU_ID, scope_name: 'RMS' };
+  const UT_ROLE = { role_id: '6b1f3c2e-8a3d-4a5b-9c1e-2d3f4a5b6c7d', role_name: 'Utility Admin', scope_type: 'UTILITY' as const, scope_id: UT_ID, scope_name: 'Helpdesk' };
+  const PERMS = { DASHBOARD: ['view'], RMS_REGISTRATION: ['view', 'create'] };
+
+  /** Signs in with several workspaces, so nothing is auto-selected and step 2 is required. */
+  async function signInWithChoice(clientId = 'rms-web-test', origin = RMS) {
+    const authz = app.get(AuthzClient);
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: true, assignments: [BU_ROLE, UT_ROLE] });
+    const { boot, txn } = await openLogin(clientId, { origin });
+    const login = await postLogin(boot!, clientId, { its_id: 'ITS12345', password: PASSWORD });
+    expect(login.statusCode).toBe(200);
+    return { boot: boot!, txn, cookie: sessionCookie(login), recorder: jest.spyOn(authz, 'recordSession').mockResolvedValue() };
+  }
+
+  const selectWorkspace = (
+    body: Record<string, unknown>,
+    o: { csrf?: string; cookie?: string; origin?: string } = {},
+  ) =>
+    app.inject({
+      method: 'POST',
+      url: '/embed/select-workspace',
+      headers: { origin: o.origin ?? ISSUER, 'content-type': 'application/json', ...(o.csrf ? { 'x-csrf-token': o.csrf } : {}), ...(o.cookie ? { cookie: o.cookie } : {}) },
+      payload: body,
+    });
+
+  // Every test here signs in for real; the earlier suites have already spent the per-IP login budget.
+  // Only this block's rate-limit counters are cleared - the brute-force tests keep asserting their own.
+  // recordSession is one shared spy for the whole file, so its history is reset before each test here.
+  beforeEach(async () => {
+    const keys = await redis.keys('ratelimit:login:*');
+    if (keys.length > 0) await redis.del(...keys);
+    jest.spyOn(app.get(AuthzClient), 'recordSession').mockResolvedValue().mockClear();
+  });
+
+  afterEach(() => {
+    const authz = app.get(AuthzClient);
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
+    jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
+    jest.spyOn(authz, 'recordSession').mockResolvedValue();
+  });
+
+  it('records no local session while several workspaces are open, then exactly one for the chosen role', async () => {
+    const { boot, cookie, recorder } = await signInWithChoice();
+    expect(recorder).not.toHaveBeenCalled(); // no role chosen yet: user_sessions.role_id is NOT NULL
+
+    jest.spyOn(app.get(AuthzClient), 'resolveAssignment').mockResolvedValueOnce({ active_scope: BU_ROLE, permissions: PERMS });
+    const res = await selectWorkspace(
+      { transaction_id: boot.transaction_id, client_id: 'rms-web-test', role_id: BU_ROLE.role_id, scope_type: 'BUSINESS_UNIT', scope_id: BU_ID },
+      { csrf: boot.csrf, cookie },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      success: true,
+      scope: 'BUSINESS_UNIT',
+      session: { role_type: 'MULTI', audience: 'rms-web-test', active_role: { role_id: BU_ROLE.role_id, scope_id: BU_ID }, modules: ['dashboard', 'rms-registration'] },
+    });
+    expect(recorder).toHaveBeenCalledTimes(1);
+
+    const recorded = recorder.mock.calls[0][0];
+    expect(recorded).toMatchObject({ its_id: 'ITS12345', role_id: BU_ROLE.role_id, scope_type: 'BUSINESS_UNIT', scope_id: BU_ID, aud: 'rms-web-test' });
+    // aud is the validated client_id, and the token is opaque - never a JWT (which always carries two dots)
+    expect(recorded.core_sid).toMatch(/^sid_/);
+    expect(recorded.session_token).toMatch(/^[A-Za-z0-9_-]{43,}$/);
+    expect(recorded.session_token).not.toContain('.');
+  });
+
+  it('activates and records automatically when exactly one workspace exists', async () => {
+    const authz = app.get(AuthzClient);
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [BU_ROLE] });
+    jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce({ active_scope: BU_ROLE, permissions: PERMS });
+    const recorder = jest.spyOn(authz, 'recordSession').mockResolvedValue();
+
+    const { boot } = await openLogin('rms-web-test', { origin: RMS });
+    const login = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+
+    expect(login.json()).toMatchObject({ session: { role_type: 'SINGLE', active_role: { role_id: BU_ROLE.role_id } } });
+    expect(recorder).toHaveBeenCalledTimes(1);
+    expect(recorder.mock.calls[0][0]).toMatchObject({ aud: 'rms-web-test', role_id: BU_ROLE.role_id });
+  });
+
+  it('refuses a role the user does not hold, and records nothing', async () => {
+    const { boot, cookie, recorder } = await signInWithChoice();
+    jest.spyOn(app.get(AuthzClient), 'resolveAssignment').mockResolvedValueOnce(null); // not assigned, per the database
+
+    const res = await selectWorkspace(
+      { transaction_id: boot.transaction_id, client_id: 'rms-web-test', role_id: BU_ROLE.role_id, scope_type: 'UTILITY', scope_id: UT_ID },
+      { csrf: boot.csrf, cookie },
+    );
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('SCOPE_NOT_ASSIGNED');
+    expect(recorder).not.toHaveBeenCalled();
+  });
+
+  it('requires the session cookie, the CSRF token, the issuer origin and a well-formed role', async () => {
+    const { boot, cookie } = await signInWithChoice();
+    const body = { transaction_id: boot.transaction_id, client_id: 'rms-web-test', role_id: BU_ROLE.role_id, scope_type: 'BUSINESS_UNIT', scope_id: BU_ID };
+
+    expect((await selectWorkspace(body, { csrf: boot.csrf })).statusCode).toBe(401); // no session cookie
+    expect((await selectWorkspace(body, { cookie })).statusCode).toBe(403); // no CSRF token
+    expect((await selectWorkspace(body, { csrf: 'wrong-token', cookie })).statusCode).toBe(403);
+    expect((await selectWorkspace(body, { csrf: boot.csrf, cookie, origin: RMS })).statusCode).toBe(403); // not the issuer origin
+    expect((await selectWorkspace({ ...body, role_id: 'not-a-uuid' }, { csrf: boot.csrf, cookie })).statusCode).toBe(400);
+    expect((await selectWorkspace({ ...body, client_id: 'ams-web-test' }, { csrf: boot.csrf, cookie })).statusCode).toBe(400); // transaction is not this client's
+  });
+
+  it('refuses a transaction that belongs to another browser session', async () => {
+    const first = await signInWithChoice();
+    const second = await signInWithChoice(); // a second sign-in, with its own session cookie
+
+    const res = await selectWorkspace(
+      { transaction_id: first.boot.transaction_id, client_id: 'rms-web-test', role_id: BU_ROLE.role_id, scope_type: 'BUSINESS_UNIT', scope_id: BU_ID },
+      { csrf: first.boot.csrf, cookie: second.cookie },
+    );
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('TRANSACTION_SESSION_MISMATCH');
+    expect(second.recorder).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the Authorization service is unavailable', async () => {
+    const { boot, cookie, recorder } = await signInWithChoice();
+    jest.spyOn(app.get(AuthzClient), 'resolveAssignment').mockRejectedValueOnce(Errors.dependencyUnavailable());
+
+    const res = await selectWorkspace(
+      { transaction_id: boot.transaction_id, client_id: 'rms-web-test', role_id: BU_ROLE.role_id, scope_type: 'BUSINESS_UNIT', scope_id: BU_ID },
+      { csrf: boot.csrf, cookie },
+    );
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error.code).toBe('DEPENDENCY_UNAVAILABLE');
+    expect(recorder).not.toHaveBeenCalled();
+  });
+
+  it('lists the workspaces of the signed-in embedded session for the selection screen', async () => {
+    const { boot, cookie } = await signInWithChoice();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/embed/assignments',
+      headers: { origin: ISSUER, 'x-csrf-token': boot.csrf, 'content-type': 'application/json', cookie },
+      payload: { transaction_id: boot.transaction_id, client_id: 'rms-web-test' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ its_id: 'ITS12345', requires_scope_selection: true });
+    expect(res.json().assignments).toHaveLength(2);
   });
 });

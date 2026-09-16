@@ -17,10 +17,12 @@ import { FederationSessionService } from '@modules/sessions/services/federation-
 import { clearSessionCookie, readSessionHandle, setSessionCookie } from '@modules/sessions/services/session-cookie';
 import { TransactionService } from '@modules/transactions/services/transaction.service';
 import { ErrorPageExtras, buildCsp, renderErrorPage, renderLoginPage, sendHtml } from '../services/login-views';
+import { EmbedWorkspaceService } from '../services/embed-workspace.service';
 import { AssertionDelivery, LoginService } from '../services/login.service';
 import { requestMeta } from '../services/request-meta.util';
 import { EmbedLoginDto } from './dto/embed-login.dto';
 import { EmbedLogoutDto } from './dto/embed-logout.dto';
+import { EmbedSelectWorkspaceDto } from './dto/embed-select-workspace.dto';
 import { TransactionRefDto } from './dto/transaction-ref.dto';
 
 interface FailureContext {
@@ -44,6 +46,7 @@ export class EmbedController {
     private readonly audit: AuditService,
     private readonly config: AppConfig,
     private readonly authz: AuthzClient,
+    private readonly workspaces: EmbedWorkspaceService,
   ) {}
 
   @Get('login')
@@ -144,6 +147,47 @@ export class EmbedController {
     }
   }
 
+  @Post('assignments')
+  @HttpCode(200)
+  @ApiHeader({ name: 'x-csrf-token', required: true })
+  @ApiOperation({ summary: 'Workspaces (role × scope) of the signed-in embedded session, for the Select Workspace screen' })
+  assignments(@Body() dto: TransactionRefDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest) {
+    return this.workspaces.assignments(dto, csrf, req);
+  }
+
+  /**
+   * Step 2 of embedded login: the chosen workspace is validated against the database and the local
+   * session (miqaat_core.user_sessions) is created. Required whenever the user holds more than one
+   * workspace - a single one is selected automatically by POST /embed/login.
+   */
+  @Post('select-workspace')
+  @HttpCode(200)
+  @UseFilters(LoginEnvelopeFilter)
+  @ApiHeader({ name: 'x-csrf-token', required: true })
+  @ApiOperation({ summary: 'Select a workspace; validates role and scope server-side and creates the local session' })
+  async selectWorkspace(@Body() dto: EmbedSelectWorkspaceDto, @Headers('x-csrf-token') csrf: string, @Req() req: FastifyRequest): Promise<LoginEnvelope> {
+    const selected = await this.workspaces.select(
+      { transaction_id: dto.transaction_id, client_id: dto.client_id, role_id: dto.role_id, scope_type: dto.scope_type, scope_id: dto.scope_id ?? null },
+      csrf,
+      req,
+    );
+    const all = await this.authz.getAssignments(selected.session.its_id);
+    const access = toModulePermissions(selected.resolved.permissions);
+    return successEnvelope(req.id, {
+      token: '',
+      token_type: 'CoreAssertion',
+      expires_in: 0,
+      audience: selected.client_id,
+      user: { id: selected.session.its_id, its_id: selected.session.its_id, name: all.name ?? selected.session.display_name, status: 'ACTIVE' },
+      role_type: roleType(all.assignments.length),
+      active_role: toLoginRole(selected.resolved.active_scope),
+      roles: all.assignments.map(toLoginRole),
+      modules: access.modules,
+      permissions: access.permissions,
+      onboarding_required: false,
+    });
+  }
+
   @Post('logout')
   @HttpCode(200)
   @ApiHeader({ name: 'x-csrf-token', required: true })
@@ -163,13 +207,12 @@ export class EmbedController {
     const roles = workspaces.assignments.map(toLoginRole);
     let activeRole: LoginRole | null = null;
     let access: { modules: string[]; permissions: Record<string, ModulePermissions> } = { modules: [], permissions: {} };
-    if (workspaces.assignments.length === 1) {
-      const only = workspaces.assignments[0];
-      const resolved = await this.authz.resolveAssignment(session.its_id, { role_id: only.role_id, scope_type: only.scope_type, scope_id: only.scope_id ?? null });
-      if (resolved) {
-        activeRole = toLoginRole(resolved.active_scope);
-        access = toModulePermissions(resolved.permissions);
-      }
+    // Exactly one workspace is activated here (and its local session recorded); several are never chosen
+    // for the user - the page must call POST /embed/select-workspace.
+    const resolved = await this.workspaces.autoSelect(session, clientId, req, workspaces.assignments);
+    if (resolved) {
+      activeRole = toLoginRole(resolved.active_scope);
+      access = toModulePermissions(resolved.permissions);
     }
     const { core_assertion: assertion, ...details } = delivery;
     return successEnvelope(req.id, {
