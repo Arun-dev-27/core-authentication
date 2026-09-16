@@ -19,6 +19,8 @@
     "keys:rotate": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/signing-keys.ts",
     "migrate:legacy": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/migrate-legacy-users.ts",
     "seed:dev-users": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/seed-dev-users.ts",
+    "seed:clients": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/seed-clients.ts",
+    "client": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/manage-client.ts",
     "openapi:export": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/export-openapi.ts",
     "smoke:federation": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/federation-smoke.ts",
     "test:jwks": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/jwks-verification.ts",

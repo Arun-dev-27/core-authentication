@@ -1,11 +1,10 @@
 import { Module } from '@nestjs/common';
-import { AuthorizationClientModule } from '@modules/authorization-client/authorization-client.module';
 import { ClientRegistry } from './services/client-registry.service';
+import { ClientsStoreService } from './services/clients-store.service';
 
-/** Dynamic client registry — version-agnostic services, reused by every /vN edge. */
+/** Dynamic client registry, backed by core-authentication's own tables — version-agnostic, reused by every /vN edge. */
 @Module({
-  imports: [AuthorizationClientModule],
-  providers: [ClientRegistry],
+  providers: [ClientRegistry, ClientsStoreService],
   exports: [ClientRegistry],
 })
 export class ClientsServicesModule {}

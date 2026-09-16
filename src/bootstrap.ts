@@ -44,6 +44,32 @@ export async function createApp(env: Env = loadEnv()): Promise<NestFastifyApplic
     requestContext.run({ correlationId: request.id }, done);
   });
 
+  // POST /auth/transaction (and its GET status check) is called directly from a Business Unit's browser
+  // code (core-embed-react), not only server-to-server. It carries no cookie/credential, and the real
+  // trust decision - is this origin registered for this client_id? - is enforced inside the route handler
+  // regardless of CORS: an unregistered origin still gets ORIGIN_NOT_ALLOWED. Reflecting the caller's
+  // Origin here only lets the browser read a response it was always allowed to obtain another way
+  // (e.g. a server-to-server call). No other route gets this treatment.
+  fastify.addHook('onRequest', (request, reply, done) => {
+    const path = request.url.split('?')[0];
+    const isTransactionEndpoint = path === '/auth/transaction' || path.startsWith('/auth/transaction/') || path === '/v1/auth/transaction' || path.startsWith('/v1/auth/transaction/');
+    const origin = request.headers.origin;
+    if (isTransactionEndpoint && typeof origin === 'string') {
+      void reply.header('access-control-allow-origin', origin);
+      void reply.header('vary', 'origin');
+      if (request.method === 'OPTIONS') {
+        reply
+          .header('access-control-allow-methods', 'GET, POST, OPTIONS')
+          .header('access-control-allow-headers', 'content-type')
+          .header('access-control-max-age', '600')
+          .code(204)
+          .send();
+        return;
+      }
+    }
+    done();
+  });
+
   await app.register(fastifyCookie as never);
   // application/x-www-form-urlencoded (federation logout form posts) is parsed by Nest's Fastify adapter itself.
   await app.register(helmet as never, {

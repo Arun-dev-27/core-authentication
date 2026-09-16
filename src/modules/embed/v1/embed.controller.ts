@@ -7,9 +7,8 @@ import { CLIENT_ID_PATTERN, STATE_PATTERN, TRANSACTION_ID_PATTERN } from '@commo
 import { DomainError, Errors } from '@common/errors/domain-error';
 import { canonicalOrigin, originOfReferer } from '@common/utils/origin.util';
 import { AuditService } from '@core/audit/audit.service';
-import { AuthzClient } from '@modules/authorization-client/services/authz-client.service';
 import { DisplayMode, assertClientCanAuthenticate, resolveCallback, resolveEmbedOrigin } from '@modules/clients/services/client-policy';
-import { LoginEnvelope, LoginRole, ModulePermissions, roleType, successEnvelope, toLoginRole, toModulePermissions } from '@modules/portal/services/login-envelope';
+import { LoginEnvelope, successEnvelope } from '@modules/portal/services/login-envelope';
 import { LoginEnvelopeFilter } from '@modules/portal/v1/login-envelope.filter';
 import { FederationSession } from '@shared/types/session.types';
 import { ClientRegistry } from '@modules/clients/services/client-registry.service';
@@ -43,7 +42,6 @@ export class EmbedController {
     private readonly login: LoginService,
     private readonly audit: AuditService,
     private readonly config: AppConfig,
-    private readonly authz: AuthzClient,
   ) {}
 
   @Get('login')
@@ -155,34 +153,28 @@ export class EmbedController {
   }
 
   /**
-   * The same envelope as the Core Portal login. session.token is the core_assertion (identity only, unchanged);
-   * roles come from the Core workspace list. The parent application still receives only the postMessage fields.
+   * The same envelope SHAPE as the Core Portal login, but never role-enriched: the embed flow's only
+   * consumer of this response is core-authentication's own login.js running inside the iframe, and it
+   * reads exactly session.token and session.delivery to build the postMessage - roles/modules/permissions
+   * are never read from here (confirmed in login.js's deliver()) because a BU maps ITS ID -> its own
+   * roles independently, and /embed/login cannot be called any other way (CSRF + same-origin enforced).
+   * Querying an authorization service for data that's always discarded would only add a network round
+   * trip and a failure mode to an authentication that has, by this point, already fully succeeded - see
+   * PortalController for the one place this enrichment is actually needed and kept.
    */
   private async envelope(req: FastifyRequest, session: FederationSession, delivery: AssertionDelivery, clientId: string): Promise<LoginEnvelope> {
-    const workspaces = await this.authz.getAssignments(session.its_id);
-    const roles = workspaces.assignments.map(toLoginRole);
-    let activeRole: LoginRole | null = null;
-    let access: { modules: string[]; permissions: Record<string, ModulePermissions> } = { modules: [], permissions: {} };
-    if (workspaces.assignments.length === 1) {
-      const only = workspaces.assignments[0];
-      const resolved = await this.authz.resolveAssignment(session.its_id, { role_id: only.role_id, scope_type: only.scope_type, scope_id: only.scope_id ?? null });
-      if (resolved) {
-        activeRole = toLoginRole(resolved.active_scope);
-        access = toModulePermissions(resolved.permissions);
-      }
-    }
     const { core_assertion: assertion, ...details } = delivery;
     return successEnvelope(req.id, {
       token: assertion,
       token_type: 'CoreAssertion',
       expires_in: this.config.env.ASSERTION_TTL_SECONDS,
       audience: clientId,
-      user: { id: session.its_id, its_id: session.its_id, name: workspaces.name ?? session.display_name, status: 'ACTIVE' },
-      role_type: roleType(roles.length),
-      active_role: activeRole,
-      roles,
-      modules: access.modules,
-      permissions: access.permissions,
+      user: { id: session.its_id, its_id: session.its_id, name: session.display_name, status: 'ACTIVE' },
+      role_type: 'NONE',
+      active_role: null,
+      roles: [],
+      modules: [],
+      permissions: {},
       onboarding_required: false,
       delivery: details,
     });

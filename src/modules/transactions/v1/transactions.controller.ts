@@ -51,6 +51,10 @@ export class TransactionsController {
     if (embedOrigin) params.set('origin', embedOrigin);
     // The login page resolves the callback from redirect_uri again; pass it so both resolve to the same transaction.
     if (dto.redirect_uri) params.set('redirect_uri', callback);
+    // 'login' makes /embed/login skip its existing-federation-session check entirely, so a BU that has its
+    // own reason to require fresh credentials (e.g. it just ended its own local session) isn't left showing
+    // Core's "Continue as X" SSO screen for a session the BU itself no longer considers the user signed into.
+    if (dto.prompt) params.set('prompt', dto.prompt);
 
     return {
       transaction_id: txn.transaction_id,

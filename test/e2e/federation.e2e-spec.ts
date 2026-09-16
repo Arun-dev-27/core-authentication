@@ -8,6 +8,7 @@ import { loadEnv } from '@config/configuration';
 import { buildDataSourceOptions } from '@core/database/data-source-options';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
 import { AuthzClient } from '@modules/authorization-client/services/authz-client.service';
+import { ClientsStoreService } from '@modules/clients/services/clients-store.service';
 import { PasswordHasher } from '@modules/credentials/services/password-hasher';
 import { LogoutService } from '@modules/federation/services/logout.service';
 import { TransactionService } from '@modules/transactions/services/transaction.service';
@@ -139,7 +140,7 @@ beforeAll(async () => {
 
   app = await createApp(env);
   const authz = app.get(AuthzClient);
-  jest.spyOn(authz, 'getClient').mockImplementation(async (id: string) => registry()[id] ?? null);
+  jest.spyOn(app.get(ClientsStoreService), 'findByClientId').mockImplementation(async (id: string) => registry()[id] ?? null);
   jest.spyOn(authz, 'launchableApplications').mockResolvedValue([]);
   jest.spyOn(authz, 'syncUser').mockResolvedValue();
   jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
@@ -679,8 +680,8 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
       app.inject({ method: 'POST', url: '/auth/transaction', payload: { client_id: 'rms-web-test', state: 'refresh-state-abcdefghij12345', origin, display: 'embed' } });
     expect((await createTxn(NEW_ORIGIN)).json().error).toBe('ORIGIN_NOT_ALLOWED');
 
-    // origin added in the Authorization service
-    const getClient = jest.spyOn(authz, 'getClient').mockImplementation(async (id: string) => {
+    // origin added in the registry
+    const getClient = jest.spyOn(app.get(ClientsStoreService), 'findByClientId').mockImplementation(async (id: string) => {
       const all = registry();
       if (id === 'rms-web-test') all[id] = { ...all[id], allowed_embed_origins: [RMS, NEW_ORIGIN] };
       return all[id] ?? null;
@@ -756,7 +757,7 @@ describe('transaction API (POST /auth/transaction, GET /auth/transaction/:id)', 
 
   it('binds one of several registered origins and requires origin when there is more than one', async () => {
     const TWO = 'https://rms-admin.example.test';
-    const getClient = jest.spyOn(app.get(AuthzClient), 'getClient').mockImplementation(async (id: string) => {
+    const getClient = jest.spyOn(app.get(ClientsStoreService), 'findByClientId').mockImplementation(async (id: string) => {
       const all = registry();
       all['rms-web-test'] = { ...all['rms-web-test'], allowed_embed_origins: [RMS, TWO] };
       return all[id] ?? null;

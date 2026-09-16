@@ -3,20 +3,14 @@ import { AppConfig } from '@config/config.module';
 import { Errors } from '@common/errors/domain-error';
 import { currentCorrelationId } from '@common/logging/request-context';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
-import {
-  ActiveScopeClaim,
-  FederationClientConfig,
-  LaunchableApplication,
-  ResolvedWorkspace,
-  UserProfileSync,
-  WorkspaceList,
-} from '@shared/types/federation-client.types';
+import { ActiveScopeClaim, LaunchableApplication, ResolvedWorkspace, UserProfileSync, WorkspaceList } from '@shared/types/federation-client.types';
 
 /**
  * HTTP client for the Authorization service. Every request carries a freshly minted, single-use RS256
  * service token (verified there against our JWKS) - there is no API key.
- * Identity Federation asks for client configuration, workspaces (role × scope) and profile sync - never decisions
- * on business requests.
+ * Identity Federation asks for workspaces (role × scope) and profile sync here - never client/origin
+ * config (that's ClientsStoreService, local to this service - see AuthClients1789600000000) and never
+ * decisions on business requests.
  */
 @Injectable()
 export class AuthzClient {
@@ -26,13 +20,6 @@ export class AuthzClient {
     private readonly config: AppConfig,
     private readonly assertions: AssertionService,
   ) {}
-
-  /** Returns null when the client does not exist. Throws DEPENDENCY_UNAVAILABLE on outage (fail closed). */
-  async getClient(clientId: string): Promise<FederationClientConfig | null> {
-    const res = await this.request('GET', `/internal/federation/clients/${encodeURIComponent(clientId)}`);
-    if (res.status === 404) return null;
-    return this.json<FederationClientConfig>(res);
-  }
 
   async launchableApplications(itsId: string, environment: string): Promise<LaunchableApplication[]> {
     const res = await this.request('GET', `/internal/federation/users/${encodeURIComponent(itsId)}/applications?environment=${encodeURIComponent(environment)}`);

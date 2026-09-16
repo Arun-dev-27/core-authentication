@@ -27,4 +27,9 @@ export class CreateTransactionDto {
   @IsOptional()
   @IsIn(['embed', 'page'])
   display?: 'embed' | 'page';
+
+  @ApiPropertyOptional({ enum: ['login', 'auto'], description: "'login' forces the credentials form even if a Core SSO session exists; 'auto' silently continues it when possible." })
+  @IsOptional()
+  @IsIn(['login', 'auto'])
+  prompt?: 'login' | 'auto';
 }
