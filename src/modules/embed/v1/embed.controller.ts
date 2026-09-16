@@ -21,6 +21,7 @@ import { requestMeta } from '../services/request-meta.util';
 import { EmbedLoginDto } from './dto/embed-login.dto';
 import { EmbedLogoutDto } from './dto/embed-logout.dto';
 import { TransactionRefDto } from './dto/transaction-ref.dto';
+import { bindingContextOf } from '@common/security/session-binding';
 
 interface FailureContext {
   /** registered embed origin, set once client + origin + fetch-metadata checks passed */
@@ -82,7 +83,7 @@ export class EmbedController {
         callback_uri: callback,
       });
 
-      const session = query.prompt === 'login' ? null : await this.sessions.getByHandle(readSessionHandle(req, this.config));
+      const session = query.prompt === 'login' ? null : await this.sessions.getByHandle(readSessionHandle(req, this.config), bindingContextOf(req));
       await this.audit.record({ eventType: 'EMBED_LOGIN_RENDERED', outcome: 'INFO', clientId: client.client_id, ip: req.ip, metadata: { display, sso_available: Boolean(session) } });
 
       const html = renderLoginPage({

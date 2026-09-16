@@ -105,7 +105,7 @@ export class LoginService {
     if (!safeEqual(meta.csrf, txn.csrf)) throw Errors.csrf(meta.csrf ? 'CSRF_TOKEN_MISMATCH' : 'CSRF_TOKEN_MISSING');
     await this.revalidateClient(txn);
 
-    const session = await this.sessions.getByHandle(meta.sessionHandle);
+    const session = await this.sessions.getByHandle(meta.sessionHandle, { ip: meta.ip, userAgent: meta.userAgent ?? null });
     if (!session) throw Errors.sessionRequired();
     const user = await this.credentials.getActiveUser(session.its_id);
     if (!user) {
@@ -122,7 +122,7 @@ export class LoginService {
     this.assertSameOrigin(meta);
     const txn = await this.transactions.get(transactionId);
     if (!txn || !safeEqual(meta.csrf, txn.csrf)) throw Errors.csrf(meta.csrf ? 'CSRF_TOKEN_MISMATCH' : 'CSRF_TOKEN_MISSING');
-    const session = await this.sessions.getByHandle(meta.sessionHandle);
+    const session = await this.sessions.getByHandle(meta.sessionHandle, { ip: meta.ip, userAgent: meta.userAgent ?? null });
     if (!session) return;
     await this.sessions.revoke(session.sid, 'BROWSER_SESSION_ENDED');
     await this.audit.record({ eventType: 'SESSION_ENDED', outcome: 'SUCCESS', itsId: session.its_id, sid: session.sid, clientId: txn.client_id, ip: meta.ip });
@@ -147,7 +147,7 @@ export class LoginService {
    * Different user in the same browser: the previous user's federation session is logged out everywhere.
    */
   private async establishSession(user: AuthenticatedUser, meta: RequestMeta) {
-    const existing = await this.sessions.getByHandle(meta.sessionHandle);
+    const existing = await this.sessions.getByHandle(meta.sessionHandle, { ip: meta.ip, userAgent: meta.userAgent ?? null });
     if (existing) {
       await this.logout.logoutSession(existing.sid, existing.its_id === user.itsId ? 'REAUTHENTICATED' : 'USER_SWITCHED', { ip: meta.ip });
     }

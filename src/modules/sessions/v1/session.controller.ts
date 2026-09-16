@@ -5,6 +5,7 @@ import { AppConfig } from '@config/config.module';
 import { API_V1 } from '@common/constants/api-version.constants';
 import { FederationSessionService } from '../services/federation-session.service';
 import { readSessionHandle } from '../services/session-cookie';
+import { bindingContextOf } from '@common/security/session-binding';
 
 @ApiTags('auth')
 @Controller({ path: 'auth/session', version: API_V1 })
@@ -17,7 +18,7 @@ export class SessionController {
   @Get()
   @ApiOperation({ summary: 'Current central federation session for this browser (same-origin; cookie based)' })
   async current(@Req() request: FastifyRequest) {
-    const session = await this.sessions.getByHandle(readSessionHandle(request, this.config));
+    const session = await this.sessions.getByHandle(readSessionHandle(request, this.config), bindingContextOf(request));
     if (!session) return { authenticated: false };
     return {
       authenticated: true,

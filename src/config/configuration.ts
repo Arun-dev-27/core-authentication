@@ -1,17 +1,78 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseEnv } from 'node:util';
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
 const seconds = (fallback: number) => z.coerce.number().int().positive().default(fallback);
+
+/**
+ * Proxy trust used to derive the client IP (`req.ip`), which session binding compares against.
+ *
+ *   false            direct exposure; the IP is the socket peer.
+ *   <n>              number of trusted proxy hops in front of this service (Render / ALB / nginx: 1).
+ *   <cidr>[,<cidr>]  trust exactly these proxy addresses.
+ *
+ * Plain `true` is refused on purpose. It makes Fastify take the LEFT-most X-Forwarded-For entry, and
+ * that entry is whatever the client chose to send: a caller holding a stolen session cookie could set
+ * `X-Forwarded-For: <victim ip>` and walk straight through the IP check. A hop count instead resolves
+ * to the address our own trusted proxy observed, which the client cannot forge.
+ */
+/** proxy-addr's named ranges, accepted verbatim by Fastify's trustProxy. */
+const PROXY_PRESETS = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/** A single trusted-proxy entry: a preset, a bare IP, or an IP with a valid prefix length. */
+function isTrustedProxyEntry(entry: string): boolean {
+  if (PROXY_PRESETS.has(entry.toLowerCase())) return true;
+  const parts = entry.split('/');
+  if (parts.length > 2) return false;
+  const family = isIP(parts[0]);
+  if (family === 0) return false;
+  if (parts.length === 1) return true;
+  if (!/^\d+$/.test(parts[1])) return false;
+  const bits = Number(parts[1]);
+  return bits >= 0 && bits <= (family === 4 ? 32 : 128);
+}
+
+const trustProxy = z
+  .string()
+  .default('false')
+  .transform((raw, ctx): boolean | number | string[] => {
+    const value = raw.trim();
+    if (value === '' || value.toLowerCase() === 'false') return false;
+    if (value.toLowerCase() === 'true') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'must be false, a hop count (e.g. 1), or a comma-separated list of trusted proxy CIDRs; "true" would trust a client-supplied X-Forwarded-For',
+      });
+      return z.NEVER;
+    }
+    if (/^\d+$/.test(value)) {
+      const hops = Number(value);
+      if (hops < 1 || hops > 10) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hop count must be between 1 and 10' });
+        return z.NEVER;
+      }
+      return hops;
+    }
+    const cidrs = value.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
+    if (cidrs.length === 0 || !cidrs.every(isTrustedProxyEntry)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'must be false, a hop count, or a comma-separated list of trusted proxy IPs/CIDRs (or loopback/linklocal/uniquelocal)',
+      });
+      return z.NEVER;
+    }
+    return cidrs;
+  });
 
 export const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3001),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-    TRUST_PROXY: bool.default('false'),
+    TRUST_PROXY: trustProxy,
     SWAGGER_ENABLED: bool.default('true'),
 
     ISSUER: z.string().url(),

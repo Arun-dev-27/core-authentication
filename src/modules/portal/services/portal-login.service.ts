@@ -15,6 +15,7 @@ import { TransactionService } from '@modules/transactions/services/transaction.s
 import { ActiveScopeClaim, WorkspaceAssignment } from '@shared/types/federation-client.types';
 import { FederationSession } from '@shared/types/session.types';
 import { LoginEnvelope, LoginRole, LoginSession, LoginUser, roleType, successEnvelope, toLoginRole, toModulePermissions } from './login-envelope';
+import { bindingContextOf } from '@common/security/session-binding';
 
 interface ActivatedWorkspace {
   active_scope: WorkspaceAssignment;
@@ -97,7 +98,7 @@ export class PortalLoginService {
   /** Workspaces of the signed-in browser session (page reload, "Switch Workspace"). */
   async assignments(req: FastifyRequest) {
     if (canonicalOrigin(req.headers.origin ?? this.config.issuerOrigin) !== this.config.issuerOrigin) throw Errors.csrf('ORIGIN_HEADER_MISMATCH');
-    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config));
+    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config), bindingContextOf(req));
     if (!session) throw Errors.sessionRequired();
     const workspaces = await this.authz.getAssignments(session.its_id);
     return { ...workspaces, name: workspaces.name ?? session.display_name, requires_scope_selection: workspaces.assignments.length > 1 };
@@ -108,7 +109,7 @@ export class PortalLoginService {
     if (canonicalOrigin(req.headers.origin) !== this.config.issuerOrigin) throw Errors.csrf('ORIGIN_HEADER_MISMATCH');
     const txn = await this.transactions.get(input.transaction_id);
     if (!txn || txn.display !== 'portal' || !safeEqual(csrf, txn.csrf)) throw Errors.csrf();
-    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config));
+    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config), bindingContextOf(req));
     if (!session) throw Errors.sessionRequired();
     if (!(await this.transactions.bindToSession(txn.transaction_id, session))) throw Errors.csrf();
     const selected = await this.activate(session, { role_id: input.role_id, scope_type: input.scope_type, scope_id: input.scope_id ?? null }, input.audience ?? 'authorization', req.ip);

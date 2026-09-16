@@ -19,6 +19,7 @@ import { PortalLoginDto } from './dto/portal-login.dto';
 import { PortalLogoutDto } from './dto/portal-logout.dto';
 import { SelectScopeDto } from './dto/select-scope.dto';
 import { LoginEnvelopeFilter } from './login-envelope.filter';
+import { bindingContextOf } from '@common/security/session-binding';
 
 /**
  * Core Portal: sign in once, select a workspace (role × scope), then launch an application the user is entitled to
@@ -48,7 +49,7 @@ export class PortalController {
       embed_origin: null,
       callback_uri: null,
     });
-    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config));
+    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config), bindingContextOf(req));
     if (session) await this.transactions.bindToSession(txn.transaction_id, session, true);
     const html = renderLoginPage({
       mode: 'portal',
@@ -93,7 +94,7 @@ export class PortalController {
   @ApiOperation({ summary: 'Applications the signed-in user may launch (from the Authorization service)' })
   async applications(@Req() req: FastifyRequest) {
     if (canonicalOrigin(req.headers.origin ?? this.config.issuerOrigin) !== this.config.issuerOrigin) throw Errors.csrf('ORIGIN_HEADER_MISMATCH');
-    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config));
+    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config), bindingContextOf(req));
     if (!session) throw Errors.sessionRequired();
     const apps = await this.authz.launchableApplications(session.its_id, this.config.env.PORTAL_ENVIRONMENT);
     return { its_id: session.its_id, display_name: session.display_name, environment: this.config.env.PORTAL_ENVIRONMENT, applications: apps };
@@ -110,7 +111,7 @@ export class PortalController {
       if (canonicalOrigin(meta.origin) !== this.config.issuerOrigin) throw Errors.csrf('ORIGIN_HEADER_MISMATCH');
       const txn = await this.transactions.get(dto.transaction_id);
       if (!txn || !safeEqual(csrf, txn.csrf)) throw Errors.csrf();
-      const session = await this.sessions.getByHandle(meta.sessionHandle);
+      const session = await this.sessions.getByHandle(meta.sessionHandle, { ip: meta.ip, userAgent: meta.userAgent ?? null });
       if (session) await this.logout.logoutSession(session.sid, 'PORTAL_SIGN_OUT_EVERYWHERE', { ip: meta.ip });
     }
     clearSessionCookie(reply, this.config);

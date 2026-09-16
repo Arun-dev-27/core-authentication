@@ -12,4 +12,8 @@ export interface FederationSession {
   is_active: boolean;
   /** sha256 of the cookie handle; the handle itself is never stored */
   handle_hash: string;
+  /** Client IP this session was established from; the cookie is only honoured from the same one. */
+  ip_address: string | null;
+  /** User-Agent this session was established with, capped at USER_AGENT_MAX_LENGTH. */
+  user_agent: string | null;
 }

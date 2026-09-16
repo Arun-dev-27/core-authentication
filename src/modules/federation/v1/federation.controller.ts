@@ -16,6 +16,7 @@ import { FederationSessionService } from '@modules/sessions/services/federation-
 import { clearSessionCookie, readSessionHandle } from '@modules/sessions/services/session-cookie';
 import { LogoutService } from '../services/logout.service';
 import { FederationLogoutDto } from './dto/federation-logout.dto';
+import { bindingContextOf } from '@common/security/session-binding';
 
 @ApiTags('federation')
 @Controller({ path: 'federation', version: API_V1 })
@@ -65,7 +66,7 @@ export class FederationController {
       if (!matchRegisteredOrigin(requestOrigin, client.allowed_embed_origins)) throw Errors.originNotAllowed();
     }
 
-    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config));
+    const session = await this.sessions.getByHandle(readSessionHandle(req, this.config), bindingContextOf(req));
     let loggedOut = false;
     if (session) {
       if (!sameOrigin && (!dto.logout_hint || !safeEqual(dto.logout_hint, session.sid))) {
