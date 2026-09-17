@@ -1,49 +1,29 @@
-# Identity Federation Service on the Miqaat Core DEV server (Lightsail, 3.7.149.74).
+# core-authentication on the Miqaat Core DEV server.
 #
-# Unlike docker-compose.yml, this file starts NO database and NO Redis: it attaches the
-# service to the shared, externally-managed `dev_miqaat_core_net` and consumes
-# dev_miqaat_core_rds1 + dev_miqaat_core_redis, per the connection handover.
+# Runs the application only, attached to the existing `dev_miqaat_core_net` so it can reach the existing identity
+# database and Redis by their host names. No database container, no migration, no table creation, no seed:
+# IDENTITY_DB_* in ../.env.dev-server must name the existing database and schema, and the app refuses to start if
+# that schema or any mapped table/column is missing.
 #
-#   docker compose -f docker/docker-compose.dev-server.yml --env-file .env.dev-server up -d --build
-#
-# The Miqaat Core stack owns the network and must already be up:
-#   cd /opt/miqaat-core-network && docker compose up -d
+#   docker compose -f docker/docker-compose.dev-server.yml up -d --build
 name: miqaat-authn-dev
 
-x-authn: &authn
-  image: miqaat-identity-federation-service:dev
-  build:
-    context: ..
-    dockerfile: docker/Dockerfile
-  env_file:
-    - ../.env.dev-server
-  networks:
-    - dev_miqaat_core_net
-
 services:
-  # One-shot. Applies TypeORM migrations, then exits 0; the app waits for it.
-  # Runs the compiled data-source, so no ts-node / devDependencies are needed.
-  authn-migrate:
-    <<: *authn
-    container_name: dev_miqaat_authn_migrate
-    restart: "no"
-    command: ["node", "node_modules/typeorm/cli.js", "migration:run", "-d", "dist/core/database/data-source.js"]
-
   authn:
-    <<: *authn
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: miqaat-identity-federation-service:dev
     container_name: dev_miqaat_authn
-    restart: unless-stopped
-    depends_on:
-      authn-migrate:
-        condition: service_completed_successfully
+    env_file:
+      - ../.env
     ports:
-      # Published because browsers must reach it. The databases stay unpublished.
       - "3001:3001"
     volumes:
-      # SIGNING_KEY_PROVIDER=file writes the RS256 keyset here. Without this volume a
-      # `compose up` regenerates the keyset, every issued token stops verifying and every
-      # consumer has to re-fetch the JWKS.
       - authn-keys:/app/.keys
+    networks:
+      - dev_miqaat_core_net
+    restart: unless-stopped
 
 volumes:
   authn-keys:

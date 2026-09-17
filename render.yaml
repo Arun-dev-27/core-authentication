@@ -61,19 +61,19 @@ services:
         value: "true"
       - key: ISSUER
         value: https://miqaat-core-authentication.onrender.com
-      - key: AUTH_DB_HOST
+      - key: IDENTITY_DB_HOST
         fromDatabase: { name: miqaat-auth-db, property: host }
-      - key: AUTH_DB_PORT
+      - key: IDENTITY_DB_PORT
         fromDatabase: { name: miqaat-auth-db, property: port }
-      - key: AUTH_DB_USER
+      - key: IDENTITY_DB_USER
         fromDatabase: { name: miqaat-auth-db, property: user }
-      - key: AUTH_DB_PASSWORD
+      - key: IDENTITY_DB_PASSWORD
         fromDatabase: { name: miqaat-auth-db, property: password }
-      - key: AUTH_DB_NAME
+      - key: IDENTITY_DB_NAME
         fromDatabase: { name: miqaat-auth-db, property: database }
       # Internal hostname, private network: TypeORM is configured with rejectUnauthorized=true,
       # which Render's internal certificate does not satisfy, so SSL stays off.
-      - key: AUTH_DB_SSL
+      - key: IDENTITY_DB_SSL
         value: "false"
       - key: REDIS_URL
         fromService: { type: keyvalue, name: miqaat-cache, property: connectionString }

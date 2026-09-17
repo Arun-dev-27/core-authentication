@@ -19,7 +19,7 @@ spec:
   secretStoreRef: { name: aws-secrets-manager, kind: ClusterSecretStore }
   target: { name: identity-federation-env }
   data:
-    - { secretKey: AUTH_DB_PASSWORD, remoteRef: { key: miqaat/identity/prod/auth-db, property: password } }
+    - { secretKey: IDENTITY_DB_PASSWORD, remoteRef: { key: miqaat/identity/prod/auth-db, property: password } }
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -33,11 +33,11 @@ data:
   TRUST_PROXY: "true"
   SWAGGER_ENABLED: "false"
   ISSUER: https://identity.miqaat.com
-  AUTH_DB_HOST: miqaat-auth.cluster-xxxx.<REGION>.rds.amazonaws.com
-  AUTH_DB_PORT: "5432"
-  AUTH_DB_USER: identity_federation
-  AUTH_DB_NAME: miqaat_auth
-  AUTH_DB_SSL: "true"
+  IDENTITY_DB_HOST: miqaat-auth.cluster-xxxx.<REGION>.rds.amazonaws.com
+  IDENTITY_DB_PORT: "5432"
+  IDENTITY_DB_USER: identity_federation
+  IDENTITY_DB_NAME: miqaat_auth
+  IDENTITY_DB_SSL: "true"
   REDIS_URL: rediss://miqaat-identity.xxxx.cache.amazonaws.com:6379/0
   AUTHZ_BASE_URL: http://core-authorization.miqaat-authz.svc.cluster.local:3002
   AUTHZ_AUDIENCE: miqaat-core-authorization

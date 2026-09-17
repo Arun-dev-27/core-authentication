@@ -1,55 +1,31 @@
-# Local infrastructure for the Identity Federation Service ONLY.
-# The Authentication DB is intentionally a separate PostgreSQL server from the
-# Authorization DB (see ../core-authorization/docker-compose.yml).
+# Development: builds and runs core-authentication ONLY.
+#
+# No PostgreSQL service, no database volume, no migration, no seed, no init script. The app connects to the
+# EXISTING identity database and schema given in ../.env (IDENTITY_DB_HOST/PORT/NAME/SCHEMA/USER/PASSWORD - all
+# required, no defaults) and reads the existing records there. It refuses to start if that schema or any mapped
+# table/column does not already exist.
+#
+#   cp .env.example .env   # fill in the existing database values
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# Inside the container "localhost" is the container itself: use the real database / Redis host names
+# (or host.docker.internal for services running on this machine).
 name: miqaat-authn
 
 services:
-  auth-postgres:
-    image: postgres:16-alpine
-    container_name: miqaat-authn-postgres
-    environment:
-      POSTGRES_USER: ${AUTH_DB_USER:-miqaat_auth}
-      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-change-me-local}
-      POSTGRES_DB: ${AUTH_DB_NAME:-miqaat_auth}
+  authn:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: miqaat-identity-federation-service:dev
+    container_name: miqaat-authn
+    env_file:
+      - ../.env
     ports:
-      - "5441:5432"
+      - "3001:3001"
     volumes:
-      - authn-pgdata:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${AUTH_DB_USER:-miqaat_auth} -d ${AUTH_DB_NAME:-miqaat_auth}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      # SIGNING_KEY_PROVIDER=file: the keyset created on the host with `npm run keys:generate` (../.keys) is
+      # mounted, so the container and a rebuild keep signing with the same keys. Nothing database-related.
+      - ../.keys:/app/.keys:ro
+    restart: unless-stopped
 
-  auth-redis:
-    image: redis:7-alpine
-    container_name: miqaat-authn-redis
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6391:6379"
-    volumes:
-      - authn-redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  # Local AWS emulator: Secrets Manager holds the RS256 private keyset exactly as in production.
-  localstack:
-    image: localstack/localstack:4
-    container_name: miqaat-authn-localstack
-    environment:
-      SERVICES: secretsmanager,ssm,kms
-    ports:
-      - "4566:4566"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"secretsmanager\": \"\\(available\\|running\\)\"'"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-volumes:
-  authn-pgdata:
-  authn-redisdata:
