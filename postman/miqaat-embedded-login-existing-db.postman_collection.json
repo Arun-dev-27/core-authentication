@@ -1,0 +1,2139 @@
+{
+  "info": {
+    "name": "Miqaat Embedded Login - Existing Databases",
+    "description": "End-to-end Embedded Login -> Authentication (existing identity database) -> Authorization (existing authorization database).\n\nUses only EXISTING users, roles and permissions. No request creates or changes a user, role, tenant, module or permission; the services only write their own session / login-attempt / audit rows.\n\nRun the folders in order (Collection Runner or `newman run`). Select the environment first and fill in existing ITS IDs and passwords:\n- memberItsId / memberPassword: active, eligible, allow_login, present in the authorization DB with ONE role (tenant-scoped role recommended)\n- multiRoleItsId: holds several roles\n- ineligibleItsId: not in user_eligible; inactiveItsId: status_id <> 3; notAllowedItsId: allow_login = false\n- notOnboardedItsId: not in the authorization users table; disabledItsId: authorization users.status = DISABLED; noRoleItsId: no role\n- otherTenantId: any tenant id different from the member role's tenant; deniedModule: a module code the member role has no grant on\n\nScenario requests whose ITS ID variable is empty will fail - remove them from the run if you have no such user.\nRequests that go straight to the services imitate the browser (iframe fetch-metadata headers, Origin, CSRF) exactly as the React embed app sends them.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "txn",
+      "value": ""
+    },
+    {
+      "key": "csrf",
+      "value": ""
+    },
+    {
+      "key": "assertion",
+      "value": ""
+    },
+    {
+      "key": "ssoAssertion",
+      "value": ""
+    },
+    {
+      "key": "federationSession",
+      "value": ""
+    },
+    {
+      "key": "coreSid",
+      "value": ""
+    },
+    {
+      "key": "miqaatSession",
+      "value": ""
+    },
+    {
+      "key": "multiRoleAssertion",
+      "value": ""
+    },
+    {
+      "key": "pendingToken",
+      "value": ""
+    },
+    {
+      "key": "chosenRoleId",
+      "value": ""
+    },
+    {
+      "key": "chosenRoleCode",
+      "value": ""
+    },
+    {
+      "key": "grantedModule",
+      "value": ""
+    },
+    {
+      "key": "grantedAction",
+      "value": ""
+    },
+    {
+      "key": "roleTenantId",
+      "value": ""
+    },
+    {
+      "key": "scenarioAssertion",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Health and discovery",
+      "item": [
+        {
+          "name": "core-authentication ready (identity DB, Redis, keys)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('identity database up', () => pm.expect(pm.response.json().checks.database).to.eql('up'));",
+                  "pm.test('redis up', () => pm.expect(pm.response.json().checks.redis).to.eql('up'));",
+                  "pm.test('signing keys loaded', () => pm.expect(pm.response.json().checks.signing_keys).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authnBaseUrl}}/health/ready"
+          }
+        },
+        {
+          "name": "core-authorization ready (authorization DB, Redis)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('authorization database up', () => pm.expect(pm.response.json().checks.database).to.eql('up'));",
+                  "pm.test('redis up', () => pm.expect(pm.response.json().checks.redis).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authzBaseUrl}}/health/ready"
+          }
+        },
+        {
+          "name": "JWKS publishes RS256 public keys only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const keys = pm.response.json().keys;",
+                  "pm.test('at least one key', () => pm.expect(keys.length).to.be.above(0));",
+                  "pm.test('RS256, no private parameters', () => keys.forEach((k) => { pm.expect(k.alg).to.eql('RS256'); pm.expect(k).to.not.have.any.keys('d', 'p', 'q'); }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authnBaseUrl}}/.well-known/jwks.json"
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Embedded login page - client and origin validation",
+      "item": [
+        {
+          "name": "Registered client + registered origin -> login page, framable only by that origin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}",
+                  "",
+                  "pm.test('frame-ancestors is exactly the registered origin', () => {",
+                  "  const csp = pm.response.headers.get('Content-Security-Policy') || '';",
+                  "  pm.expect(csp).to.include('frame-ancestors ' + pm.variables.get('origin'));",
+                  "  pm.expect(csp).to.not.include('*');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}"
+          }
+        },
+        {
+          "name": "Unknown client_id -> rejected",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected (4xx)', () => pm.expect(pm.response.code).to.be.within(400, 499));",
+                  "pm.test('no login form', () => pm.expect(pm.response.text()).to.not.include('miqaat-boot'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id=unknown-client-xyz&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}"
+          }
+        },
+        {
+          "name": "Unregistered origin -> 403",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('no login form', () => pm.expect(pm.response.text()).to.not.include('miqaat-boot'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Referer",
+                "value": "https://evil.example.com/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin=https://evil.example.com"
+          }
+        },
+        {
+          "name": "Unregistered callback URL -> rejected",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejected (4xx)', () => pm.expect(pm.response.code).to.be.within(400, 499));",
+                  "pm.test('no login form', () => pm.expect(pm.response.text()).to.not.include('miqaat-boot'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}&redirect_uri=https://evil.example.com/cb"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Authentication - existing identity users",
+      "item": [
+        {
+          "name": "Open login page (member)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: existing valid member -> core assertion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('RS256 core assertion issued', () => pm.expect(body.session.token.split('.')).to.have.length(3));",
+                  "pm.collectionVariables.set('assertion', body.session.token);",
+                  "",
+                  "const cookie = pm.response.headers.filter((h) => h.key.toLowerCase() === 'set-cookie').map((h) => h.value).find((v) => v.startsWith('federation_session='));",
+                  "pm.test('Core session cookie is HttpOnly', () => pm.expect(cookie, 'federation_session cookie').to.match(/HttpOnly/i));",
+                  "if (cookie) pm.collectionVariables.set('federationSession', cookie.split(';')[0].split('=')[1]);",
+                  "const payload = JSON.parse(CryptoJS.enc.Base64.parse(body.session.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')).toString(CryptoJS.enc.Utf8));",
+                  "pm.collectionVariables.set('coreSid', payload.sid);",
+                  "",
+                  "pm.test('delivered by postMessage to the exact registered origin', () => {",
+                  "  pm.expect(body.session.delivery.delivery).to.eql('post_message');",
+                  "  pm.expect(body.session.delivery.target_origin).to.eql(pm.variables.get('origin'));",
+                  "});",
+                  "pm.test('audience is the client_id', () => pm.expect(body.session.audience).to.eql(pm.variables.get('clientId')));",
+                  "pm.test('no Core access or refresh token exposed', () => pm.expect(pm.response.text()).to.not.match(/access_token|refresh_token/i));",
+                  "const header = JSON.parse(CryptoJS.enc.Base64.parse(body.session.token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')).toString(CryptoJS.enc.Utf8));",
+                  "const claims = JSON.parse(CryptoJS.enc.Base64.parse(body.session.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')).toString(CryptoJS.enc.Utf8));",
+                  "pm.test('alg RS256 with kid', () => { pm.expect(header.alg).to.eql('RS256'); pm.expect(header.kid).to.be.a('string'); });",
+                  "pm.test('claims: iss, sub = ITS ID, aud = client_id, sid, jti, txn, auth_time, iat, exp', () => {",
+                  "  pm.expect(claims).to.include.all.keys('iss', 'sub', 'aud', 'sid', 'jti', 'txn', 'auth_time', 'iat', 'exp');",
+                  "  pm.expect(claims.sub).to.eql(String(Number(pm.variables.get('memberItsId'))));",
+                  "  pm.expect(claims.aud).to.eql(pm.variables.get('clientId'));",
+                  "  pm.expect(claims.txn).to.eql(pm.collectionVariables.get('txn'));",
+                  "});",
+                  "pm.test('no roles or permissions in the assertion', () => pm.expect(Object.keys(claims).filter((k) => /role|permission|module|tenant|scope/i.test(k))).to.eql([]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{memberItsId}}\",\n  \"password\": \"{{memberPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login",
+            "description": "Authenticates against the existing users + mumin_master (status_id 3, allow_login) + user_eligible tables, comparing the decrypted existing password."
+          }
+        },
+        {
+          "name": "Open login page (wrong password)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: wrong password -> 401 INVALID_CREDENTIALS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code INVALID_CREDENTIALS', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_CREDENTIALS'));",
+                  "pm.test('no assertion issued', () => pm.expect(pm.response.json().session).to.not.be.ok);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{memberItsId}}\",\n  \"password\": \"Wrong-Password-1!\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Open login page (unknown user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: unknown ITS ID -> same 401 INVALID_CREDENTIALS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code INVALID_CREDENTIALS', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_CREDENTIALS'));",
+                  "pm.test('no assertion issued', () => pm.expect(pm.response.json().session).to.not.be.ok);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{unknownItsId}}\",\n  \"password\": \"Wrong-Password-1!\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Open login page (not eligible)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: not in user_eligible -> 403 LOGIN_RESTRICTED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code LOGIN_RESTRICTED', () => pm.expect(pm.response.json().error.code).to.eql('LOGIN_RESTRICTED'));",
+                  "pm.test('no assertion issued', () => pm.expect(pm.response.json().session).to.not.be.ok);",
+                  "",
+                  "pm.test('configured restriction message shown', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{ineligibleItsId}}\",\n  \"password\": \"{{ineligiblePassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Open login page (inactive status)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: status_id <> 3 -> 401 INVALID_CREDENTIALS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code INVALID_CREDENTIALS', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_CREDENTIALS'));",
+                  "pm.test('no assertion issued', () => pm.expect(pm.response.json().session).to.not.be.ok);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{inactiveItsId}}\",\n  \"password\": \"{{inactivePassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Open login page (login not allowed)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: allow_login = false -> 403 ACCOUNT_UNAVAILABLE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code ACCOUNT_UNAVAILABLE', () => pm.expect(pm.response.json().error.code).to.eql('ACCOUNT_UNAVAILABLE'));",
+                  "pm.test('no assertion issued', () => pm.expect(pm.response.json().session).to.not.be.ok);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{notAllowedItsId}}\",\n  \"password\": \"{{notAllowedPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "CSRF: sign-in without the page token -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('CSRF_VALIDATION_FAILED', () => pm.expect(pm.response.json().error.code).to.eql('CSRF_VALIDATION_FAILED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "wrong-token"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"its_id\": \"{{memberItsId}}\",\n  \"password\": \"{{memberPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Authorization - existing roles and permissions",
+      "item": [
+        {
+          "name": "BU backend: exchange assertion -> local session with existing role + permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "let body = pm.response.json();",
+                  "pm.test('assertion verified', () => pm.expect(body.verified).to.eql(true));",
+                  "pm.test('Mumin_id mapped to authorization users.its_id', () => pm.expect(body.its_id).to.eql(String(Number(pm.variables.get('memberItsId')))));",
+                  "pm.test('single role (use a member with exactly one role)', () => pm.expect(body.selection_required).to.not.eql(true));",
+                  "pm.test('existing role, level and modules returned', () => {",
+                  "  pm.expect(body.role.code).to.be.a('string');",
+                  "  pm.expect(body.role.level).to.be.oneOf(['CORE_ADMIN', 'BUSINESS_UNIT_ADMIN', 'UTILITY_ADMIN']);",
+                  "  pm.expect(body.modules).to.include('dashboard');",
+                  "});",
+                  "",
+                  "const local = pm.response.headers.filter((h) => h.key.toLowerCase() === 'set-cookie').map((h) => h.value).find((v) => v.startsWith('miqaat_session='));",
+                  "pm.test('local miqaat_session cookie set (HttpOnly)', () => pm.expect(local, 'miqaat_session cookie').to.match(/HttpOnly/i));",
+                  "if (local) pm.collectionVariables.set('miqaatSession', decodeURIComponent(local.split(';')[0].split('=')[1]));",
+                  "",
+                  "pm.collectionVariables.set('roleTenantId', body.role.tenant_id || '');",
+                  "const granted = Object.entries(body.permissions || {}).filter(([m]) => m !== 'dashboard').flatMap(([m, a]) => Object.keys(a).filter((x) => a[x]).map((x) => [m, x]));",
+                  "pm.test('role holds at least one module permission', () => pm.expect(granted.length).to.be.above(0));",
+                  "if (granted.length) { pm.collectionVariables.set('grantedModule', granted[0][0].toUpperCase()); pm.collectionVariables.set('grantedAction', granted[0][1].toUpperCase()); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{assertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session",
+            "description": "Verifies the RS256 assertion against the Core JWKS (iss, aud, exp, jti replay), maps sub -> existing users.its_id and loads the existing user_roles / roles / tenants / role_permissions."
+          }
+        },
+        {
+          "name": "Replay the same assertion -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401 (jti already used)', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_ASSERTION', () => pm.expect(pm.response.json().error).to.eql('INVALID_ASSERTION'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{assertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session"
+          }
+        },
+        {
+          "name": "Tampered assertion signature -> 401",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('assertion') || 'a.b.c';",
+                  "pm.collectionVariables.set('tamperedAssertion', t.replace(/\\.[^.]+$/, '.AAAA'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{tamperedAssertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session"
+          }
+        },
+        {
+          "name": "GET /session/me with the local session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('same ITS ID', () => pm.expect(pm.response.json().its_id).to.eql(String(Number(pm.variables.get('memberItsId')))));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/authorization/session/me"
+          }
+        },
+        {
+          "name": "Check: a granted module action -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('allowed', () => pm.expect(pm.response.json().allowed).to.eql(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"module\": \"{{grantedModule}}\",\n  \"action\": \"{{grantedAction}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session/check"
+          }
+        },
+        {
+          "name": "Check: module the role has no grant on -> 403 MODULE_NOT_GRANTED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('PERMISSION_DENIED / MODULE_NOT_GRANTED', () => {",
+                  "  const e = pm.response.json();",
+                  "  pm.expect(e.error).to.eql('PERMISSION_DENIED');",
+                  "  pm.expect(e.details.reason).to.eql('MODULE_NOT_GRANTED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"module\": \"{{deniedModule}}\",\n  \"action\": \"READ\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session/check"
+          }
+        },
+        {
+          "name": "Check: another tenant -> 403 TENANT_MISMATCH (tenant-scoped role)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('roleTenantId')) {",
+                  "  pm.test('CORE_ADMIN role is platform-wide: other tenants allowed', () => pm.response.to.have.status(200));",
+                  "} else {",
+                  "  pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "  pm.test('TENANT_MISMATCH', () => pm.expect(pm.response.json().details.reason).to.eql('TENANT_MISMATCH'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"module\": \"{{grantedModule}}\",\n  \"action\": \"{{grantedAction}}\",\n  \"tenant_id\": \"{{otherTenantId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session/check"
+          }
+        },
+        {
+          "name": "Logout local session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('logged out', () => pm.expect(pm.response.json().logged_out).to.eql(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session/logout"
+          }
+        },
+        {
+          "name": "GET /session/me after logout -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', () => pm.response.to.have.status(401));",
+                  "pm.test('SESSION_REQUIRED', () => pm.expect(pm.response.json().error).to.eql('SESSION_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/authorization/session/me"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Multiple roles - chosen role only",
+      "item": [
+        {
+          "name": "Open login page (multi-role user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: multi-role user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('RS256 core assertion issued', () => pm.expect(body.session.token.split('.')).to.have.length(3));",
+                  "pm.collectionVariables.set('multiRoleAssertion', body.session.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{multiRoleItsId}}\",\n  \"password\": \"{{multiRolePassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "BU backend: exchange -> selection_required with every existing role",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('selection required', () => pm.expect(body.selection_required).to.eql(true));",
+                  "pm.test('two or more roles listed', () => pm.expect(body.roles.length).to.be.above(1));",
+                  "pm.collectionVariables.set('pendingToken', body.pending_token);",
+                  "const last = body.roles[body.roles.length - 1];",
+                  "pm.collectionVariables.set('chosenRoleId', last.role_id);",
+                  "pm.collectionVariables.set('chosenRoleCode', last.role_code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{multiRoleAssertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session"
+          }
+        },
+        {
+          "name": "Select one role -> session for that role only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('session role is the chosen role', () => pm.expect(pm.response.json().role.code).to.eql(pm.collectionVariables.get('chosenRoleCode')));",
+                  "",
+                  "const local = pm.response.headers.filter((h) => h.key.toLowerCase() === 'set-cookie').map((h) => h.value).find((v) => v.startsWith('miqaat_session='));",
+                  "pm.test('local miqaat_session cookie set (HttpOnly)', () => pm.expect(local, 'miqaat_session cookie').to.match(/HttpOnly/i));",
+                  "if (local) pm.collectionVariables.set('miqaatSession', decodeURIComponent(local.split(';')[0].split('=')[1]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pending_token\": \"{{pendingToken}}\",\n  \"role_id\": \"{{chosenRoleId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session/select"
+          }
+        },
+        {
+          "name": "GET /session/me -> chosen role",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('role is the chosen one', () => pm.expect(pm.response.json().role.code).to.eql(pm.collectionVariables.get('chosenRoleCode')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "miqaat_session={{miqaatSession}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/authorization/session/me"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Authorization refusals for authenticated users",
+      "item": [
+        {
+          "name": "Open login page (not onboarded)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: identity user not in authorization DB",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('RS256 core assertion issued', () => pm.expect(body.session.token.split('.')).to.have.length(3));",
+                  "pm.collectionVariables.set('scenarioAssertion', body.session.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{notOnboardedItsId}}\",\n  \"password\": \"{{notOnboardedPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Exchange -> 403 USER_NOT_ONBOARDED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('USER_NOT_ONBOARDED', () => pm.expect(pm.response.json().error).to.eql('USER_NOT_ONBOARDED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{scenarioAssertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session"
+          }
+        },
+        {
+          "name": "Open login page (disabled)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: authorization user DISABLED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('RS256 core assertion issued', () => pm.expect(body.session.token.split('.')).to.have.length(3));",
+                  "pm.collectionVariables.set('scenarioAssertion', body.session.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{disabledItsId}}\",\n  \"password\": \"{{disabledPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Exchange -> 403 USER_DISABLED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('USER_DISABLED', () => pm.expect(pm.response.json().error).to.eql('USER_DISABLED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{scenarioAssertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session"
+          }
+        },
+        {
+          "name": "Open login page (no role)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: authorization user without role",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('RS256 core assertion issued', () => pm.expect(body.session.token.split('.')).to.have.length(3));",
+                  "pm.collectionVariables.set('scenarioAssertion', body.session.token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{noRoleItsId}}\",\n  \"password\": \"{{noRolePassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login"
+          }
+        },
+        {
+          "name": "Exchange -> 403 NO_ROLE_ASSIGNED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+                  "pm.test('NO_ROLE_ASSIGNED', () => pm.expect(pm.response.json().error).to.eql('NO_ROLE_ASSIGNED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"core_assertion\": \"{{scenarioAssertion}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/session"
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Core session - SSO and logout",
+      "item": [
+        {
+          "name": "Open login page (fresh member sign-in for SSO)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "Sign in: member -> new Core session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('RS256 core assertion issued', () => pm.expect(body.session.token.split('.')).to.have.length(3));",
+                  "pm.collectionVariables.set('ssoAssertion', body.session.token);",
+                  "",
+                  "const cookie = pm.response.headers.filter((h) => h.key.toLowerCase() === 'set-cookie').map((h) => h.value).find((v) => v.startsWith('federation_session='));",
+                  "pm.test('Core session cookie is HttpOnly', () => pm.expect(cookie, 'federation_session cookie').to.match(/HttpOnly/i));",
+                  "if (cookie) pm.collectionVariables.set('federationSession', cookie.split(';')[0].split('=')[1]);",
+                  "const payload = JSON.parse(CryptoJS.enc.Base64.parse(body.session.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')).toString(CryptoJS.enc.Utf8));",
+                  "pm.collectionVariables.set('coreSid', payload.sid);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"identity_type\": \"ITS\",\n  \"its_id\": \"{{memberItsId}}\",\n  \"password\": \"{{memberPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/login",
+            "description": "Each sign-in by a different user in the same client replaces the previous Core session, so the SSO checks start from a fresh one."
+          }
+        },
+        {
+          "name": "Open login page with the Core session cookie",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "SSO continue -> new assertion for the same sid, no password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const token = pm.response.json().session.token;",
+                  "const claims = JSON.parse(CryptoJS.enc.Base64.parse(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')).toString(CryptoJS.enc.Utf8));",
+                  "pm.test('same Core session (sid)', () => pm.expect(claims.sid).to.eql(pm.collectionVariables.get('coreSid')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/continue"
+          }
+        },
+        {
+          "name": "Federation logout -> Core session revoked",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('logged out', () => pm.expect(pm.response.json().logged_out).to.eql(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{authnBaseUrl}}/federation/logout"
+          }
+        },
+        {
+          "name": "Open login page after logout",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('txn', 'txn-pm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login page rendered (200)', () => pm.response.to.have.status(200));",
+                  "const boot = /<script type=\"application\\/json\" id=\"miqaat-boot\">(.*?)<\\/script>/s.exec(pm.response.text());",
+                  "pm.test('boot block with CSRF token present', () => pm.expect(boot, 'boot block').to.not.equal(null));",
+                  "if (boot) {",
+                  "  const data = JSON.parse(boot[1]);",
+                  "  pm.collectionVariables.set('csrf', data.csrf);",
+                  "  pm.collectionVariables.set('txn', data.transaction_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Sec-Fetch-Dest",
+                "value": "iframe"
+              },
+              {
+                "key": "Sec-Fetch-Mode",
+                "value": "navigate"
+              },
+              {
+                "key": "Sec-Fetch-Site",
+                "value": "cross-site"
+              },
+              {
+                "key": "Referer",
+                "value": "{{origin}}/"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/embed/login?client_id={{clientId}}&transaction_id={{txn}}&state=state-{{txn}}&origin={{origin}}",
+            "description": "Loads the Core login page exactly as the business-unit page's iframe does, and stores transaction_id + csrf for the next request."
+          }
+        },
+        {
+          "name": "SSO continue after logout -> 401 SESSION_REQUIRED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401', () => pm.response.to.have.status(401));",
+                  "pm.test('SESSION_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"client_id\": \"{{clientId}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/continue"
+          }
+        }
+      ]
+    }
+  ]
+}
