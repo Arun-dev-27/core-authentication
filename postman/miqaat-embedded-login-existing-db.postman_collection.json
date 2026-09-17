@@ -2134,6 +2134,2201 @@
           }
         }
       ]
+    },
+    {
+      "name": "7. Core identity - remaining endpoints",
+      "description": "Everything core-authentication exposes beyond the embedded-login flow above.",
+      "item": [
+        {
+          "name": "POST /auth/transaction - start a login transaction (API instead of parsing the page)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201/200', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "pm.test('login_url and bound origin returned', () => { pm.expect(body.login_url).to.be.a('string'); pm.expect(body.transaction_id).to.be.a('string'); });",
+                  "if (body.csrf) pm.collectionVariables.set('csrf', body.csrf);",
+                  "if (body.transaction_id) pm.collectionVariables.set('txn', body.transaction_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{origin}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{clientId}}\",\n  \"state\": \"state-from-postman-{{$randomUUID}}\",\n  \"origin\": \"{{origin}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/auth/transaction",
+            "description": "The SDK uses this instead of scraping the login page. TRANSACTION_API_RETURNS_CSRF decides whether the CSRF token comes back here."
+          }
+        },
+        {
+          "name": "GET /auth/transaction/:id - transaction status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('same transaction', () => pm.expect(pm.response.json().transaction_id).to.eql(pm.collectionVariables.get('txn')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authnBaseUrl}}/auth/transaction/{{txn}}?client_id={{clientId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "GET /auth/client/:clientId - public client info for the login UI",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('client_id matches', () => pm.expect(pm.response.json().client_id).to.eql(pm.variables.get('clientId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authnBaseUrl}}/auth/client/{{clientId}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "GET /auth/session - current Core session from its cookie",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/auth/session",
+            "description": "Returns the signed-in ITS ID and the clients that received an assertion for this session."
+          }
+        },
+        {
+          "name": "GET /.well-known/miqaat-federation - federation metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('issuer and jwks_uri published', () => { const b = pm.response.json(); pm.expect(b.issuer).to.be.a('string'); pm.expect(b.jwks_uri).to.be.a('string'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authnBaseUrl}}/.well-known/miqaat-federation",
+            "description": ""
+          }
+        },
+        {
+          "name": "POST /embed/logout - end the Core session in this browser only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/embed/logout",
+            "description": "\"Use a different account\" on the login page. No application fan-out, unlike POST /federation/logout."
+          }
+        },
+        {
+          "name": "POST /federation/clients/:id/refresh - reload one client config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{authnBaseUrl}}/federation/clients/{{clientId}}/refresh",
+            "description": "Clears the cached client configuration. Requires an administrator access token in {{adminAccessToken}} (401 without one)."
+          }
+        },
+        {
+          "name": "GET /portal - Core Portal login page",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authnBaseUrl}}/portal",
+            "description": "Portal (workspace) login. Needs the authorization service catalog APIs; not part of the embedded-login flow."
+          }
+        },
+        {
+          "name": "POST /portal/login - portal sign-in",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"its_id\": \"{{memberItsId}}\",\n  \"password\": \"{{memberPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/portal/login",
+            "description": "Authenticates like embedded login, then asks the authorization service for workspaces. Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /portal/assignments - workspaces of the signed-in user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/portal/assignments",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /portal/select-scope - activate one workspace",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role_id\": \"{{chosenRoleId}}\",\n  \"scope_type\": \"BUSINESS_UNIT\",\n  \"scope_id\": \"{{otherTenantId}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/portal/select-scope",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /portal/applications - launchable applications",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "url": "{{authnBaseUrl}}/portal/applications",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /portal/logout - portal sign-out",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{authnBaseUrl}}/portal/logout",
+            "description": ""
+          }
+        },
+        {
+          "name": "POST /login - portal login (unprefixed alias)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transaction_id\": \"{{txn}}\",\n  \"its_id\": \"{{memberItsId}}\",\n  \"password\": \"{{memberPassword}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/login",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /select-scope - activate a workspace (unprefixed alias)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "{{authnBaseUrl}}"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrf}}"
+              },
+              {
+                "key": "Cookie",
+                "value": "federation_session={{federationSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role_id\": \"{{chosenRoleId}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/select-scope",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /federation/logout - administrator force-logout of a user",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\"\n}"
+            },
+            "url": "{{authnBaseUrl}}/federation/logout",
+            "description": "Revokes every Core session of one ITS ID and notifies the applications. Requires an administrator access token in {{adminAccessToken}} (401 without one)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Authorization service - remaining endpoints",
+      "description": "The rest of core-authorization. The session endpoints used by Embedded Login are in folders 3-5.\n\nEverything here needs an administrator access token, and most of it reads the older catalog schema (clients, applications, business_units, environments, permissions, service_principals), which the existing admin_db does not contain - those calls will error there. Requests that create or change data are skipped unless allowAdminWrites=true.",
+      "item": [
+        {
+          "name": "GET /.well-known/jwks.json - authorization service signing keys",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('keys published', () => pm.expect(pm.response.json().keys.length).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authzBaseUrl}}/.well-known/jwks.json",
+            "description": ""
+          }
+        },
+        {
+          "name": "GET /.well-known/miqaat-authorization - service metadata",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{authzBaseUrl}}/.well-known/miqaat-authorization",
+            "description": ""
+          }
+        },
+        {
+          "name": "GET /me - the caller behind the access token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/me",
+            "description": "Requires an administrator access token in {{adminAccessToken}} (401 without one)."
+          }
+        },
+        {
+          "name": "GET /me/assignments - the caller workspaces",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/me/assignments",
+            "description": "Requires an administrator access token in {{adminAccessToken}} (401 without one). Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /me/permissions - the caller permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/me/permissions",
+            "description": "Requires an administrator access token in {{adminAccessToken}} (401 without one). Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /authorization/check - server-side permission check (service token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"client_id\": \"{{clientId}}\",\n  \"permission\": \"USER_MGMT_VIEW\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/check",
+            "description": "Service-to-service check. Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /authorization/effective-permissions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"client_id\": \"{{clientId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/effective-permissions",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /authorization/token - signed authorization token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"client_id\": \"{{clientId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/authorization/token",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /internal/federation/clients/:id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/internal/federation/clients/{{clientId}}",
+            "description": "Used by core-authentication. Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /internal/federation/users/:itsId/assignments",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/internal/federation/users/{{memberItsId}}/assignments",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /internal/federation/users/:itsId/applications",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/internal/federation/users/{{memberItsId}}/applications",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /internal/federation/assignments/resolve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"role_id\": \"{{chosenRoleId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/internal/federation/assignments/resolve",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /clients - registered clients",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/clients",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /clients/:clientId",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /clients/:clientId/origins - allowed embed origins",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}/origins",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there. core-authentication keeps its own origins in auth_client_origins, managed with: npm run client -- origins add|remove."
+          }
+        },
+        {
+          "name": "POST /clients/:clientId/origins - add an embed origin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"origin\": \"{{origin}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}/origins",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there. For the existing setup use: npm run client -- origins add <client_id> <origin>."
+          }
+        },
+        {
+          "name": "DELETE /clients/:clientId/origins - remove an embed origin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"origin\": \"{{origin}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}/origins",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there. For the existing setup use: npm run client -- origins remove <client_id> <origin>."
+          }
+        },
+        {
+          "name": "GET /clients/:clientId/callbacks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}/callbacks",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /clients/:clientId/callbacks - add a callback URI",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"uri\": \"{{origin}}/auth/core/callback\",\n  \"uri_type\": \"CALLBACK\",\n  \"is_primary\": true\n}"
+            },
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}/callbacks",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "DELETE /clients/:clientId/callbacks - remove a callback URI",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"uri\": \"{{origin}}/auth/core/callback\",\n  \"uri_type\": \"CALLBACK\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}/callbacks",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /clients - register a client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{clientId}}\",\n  \"name\": \"Example\",\n  \"application_code\": \"rms\",\n  \"environment\": \"DEV\",\n  \"authentication_mode\": \"EMBEDDED_OR_REDIRECT\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/clients",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "PATCH /clients/:clientId - update a client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"ACTIVE\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/clients/{{clientId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /tenants",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/tenants",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /tenants - create a tenant",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example tenant\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/tenants",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "PATCH /tenants/:tenantId",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example tenant\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/tenants/{{otherTenantId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /business-units",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/business-units",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /business-units",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example BU\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/business-units",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "PATCH /business-units/:buId",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example BU\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/business-units/{{otherTenantId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /utilities",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/utilities",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /utilities",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example utility\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/utilities",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "PATCH /utilities/:utilityId",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example utility\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/utilities/{{otherTenantId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /applications",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/applications",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /applications",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"rms\",\n  \"name\": \"RMS\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/applications",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /environments",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/environments",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /environments",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"DEV\",\n  \"name\": \"Development\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/environments",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /modules",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/modules",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /modules",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"USR\",\n  \"name\": \"User Management\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/modules",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /roles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/roles",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /roles/:roleId",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/roles/{{chosenRoleId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /roles - create a role",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example role\",\n  \"scope_type\": \"BUSINESS_UNIT\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/roles",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "PATCH /roles/:roleId",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example role\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/roles/{{chosenRoleId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /users/:itsId",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/users/{{memberItsId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "GET /users/:itsId/roles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{authzBaseUrl}}/users/{{memberItsId}}/roles",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /users - assign a role to a user",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"role_id\": \"{{chosenRoleId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/users",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "PATCH /users/:itsId",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/users/{{memberItsId}}",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "DELETE /users - remove a role assignment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"role_id\": \"{{chosenRoleId}}\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/users",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        },
+        {
+          "name": "POST /users/sync - profile sync from Identity",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (String(pm.environment.get('allowAdminWrites')).toLowerCase() !== 'true') {",
+                  "  console.log('skipped (set allowAdminWrites=true to send this write request)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('endpoint reachable (documented response)', () => pm.expect(pm.response.code).to.be.a('number'));",
+                  "console.log(pm.request.method + ' ' + pm.request.url.getPath() + ' -> ' + pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"its_id\": \"{{memberItsId}}\",\n  \"name\": \"Example\"\n}"
+            },
+            "url": "{{authzBaseUrl}}/users/sync",
+            "description": "Belongs to the older catalog schema (clients, applications, business_units, service_principals, permissions, ...), which the existing admin_db does not contain. Kept for completeness; expect an error there."
+          }
+        }
+      ]
     }
   ]
 }
