@@ -1,13 +1,9 @@
 import { Module } from '@nestjs/common';
 import { CredentialService } from './services/credential.service';
-import { LegacyCredentialService } from './services/legacy-credential.service';
 
-/**
- * Password verification against the Authentication DB, plus the optional read-only legacy MMS
- * fallback used when a migrated account's scrypt hash is older than its MMS password.
- */
+/** Password verification against the existing identity_db login tables (read-only). */
 @Module({
-  providers: [CredentialService, LegacyCredentialService],
+  providers: [CredentialService],
   exports: [CredentialService],
 })
 export class CredentialsModule {}

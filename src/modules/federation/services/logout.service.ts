@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
 import { AuditService } from '@core/audit/audit.service';
+import { AuthSessionRepository } from '@core/database/repositories/auth-session.repository';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
 import { ClientRegistry } from '@modules/clients/services/client-registry.service';
 import { FederationSessionService } from '@modules/sessions/services/federation-session.service';
@@ -26,7 +25,7 @@ export class LogoutService {
     private readonly registry: ClientRegistry,
     private readonly assertions: AssertionService,
     private readonly audit: AuditService,
-    @InjectDataSource() private readonly db: DataSource,
+    private readonly store: AuthSessionRepository,
   ) {}
 
   async logoutSession(sid: string, reason: string, meta: { ip?: string } = {}): Promise<RevokedSession | null> {
@@ -95,9 +94,7 @@ export class LogoutService {
       detail = error instanceof Error ? error.message : 'error';
     }
 
-    await this.db
-      .query(`UPDATE auth_session_clients SET logout_status = $3, logout_at = now() WHERE sid = $1 AND client_id = $2`, [session.sid, clientId, status])
-      .catch(() => undefined);
+    await this.store.markClientLogout(session.sid, clientId, status).catch(() => undefined);
     await this.audit.record({
       eventType: 'BACKCHANNEL_LOGOUT',
       outcome: status === 'FAILED' ? 'FAILURE' : status === 'SUCCEEDED' ? 'SUCCESS' : 'INFO',

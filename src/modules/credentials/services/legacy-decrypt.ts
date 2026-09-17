@@ -41,9 +41,8 @@ import * as iconv from 'iconv-lite';
  *
  * Validated on 2026-09-13 against the MMS stage database (user 30337752) before use.
  *
- * USAGE CONSTRAINT: this function is used ONLY by the one-off legacy migration script to
- * derive the plaintext that is immediately re-hashed with scrypt. The plaintext is never
- * logged or persisted, and the running service never decrypts legacy passwords.
+ * USAGE CONSTRAINT: used only by CredentialService to compare identity_db users.password with the
+ * submitted password at sign-in. The plaintext is never logged, persisted or returned.
  */
 export function decrypt(passwordString: string | null | undefined): string {
   if (!passwordString || passwordString.length % 2 !== 0) {

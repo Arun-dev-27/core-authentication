@@ -93,12 +93,16 @@ export const envSchema = z
 
     ISSUER: z.string().url(),
 
-    AUTH_DB_HOST: z.string().min(1),
-    AUTH_DB_PORT: z.coerce.number().int().positive().default(5432),
-    AUTH_DB_USER: z.string().min(1),
-    AUTH_DB_PASSWORD: z.string().min(1),
-    AUTH_DB_NAME: z.string().min(1),
-    AUTH_DB_SSL: bool.default('false'),
+    // The EXISTING identity database. Every value is required and used exactly as given - there are no defaults,
+    // so a missing value stops the service instead of silently pointing it at some other database or schema.
+    IDENTITY_DB_HOST: z.string().min(1),
+    IDENTITY_DB_PORT: z.coerce.number().int().positive(),
+    IDENTITY_DB_NAME: z.string().min(1),
+    /** The existing schema holding users, user_eligible, mumin_master and the auth tables. Every connection runs with search_path = this schema only. */
+    IDENTITY_DB_SCHEMA: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+    IDENTITY_DB_USER: z.string().min(1),
+    IDENTITY_DB_PASSWORD: z.string().min(1),
+    IDENTITY_DB_SSL: bool.default('false'),
 
     REDIS_URL: z.string().url(),
 
@@ -152,54 +156,22 @@ export const envSchema = z
 
     PORTAL_ENVIRONMENT: z.string().regex(/^[A-Z0-9_]{2,16}$/).default('DEV'),
 
-    // --- Legacy MMS eligibility gate for Embedded Login -------------------------------------
+    // --- Login rules, evaluated against identity_db ---------------------------------------
     /**
-     * Require the mirrored MHP gate (eligible + Status_ID + Allow_Login) for any login that ends
-     * in an RS256 assertion for a client. Portal login is not affected either way.
+     * Application-level login restriction (legacy "Login Restriction Query"): when on, the ITS ID
+     * must have a row in user_eligible (MHP_User_Login_Eligible), otherwise sign-in is refused with
+     * LOGIN_RESTRICTION_MESSAGE.
      */
-    MHP_ELIGIBILITY_REQUIRED: bool.default('true'),
-    /**
-     * Which credential Embedded Login checks once the eligibility gate has passed.
-     *
-     *   'legacy-decrypt'  decrypt MHP_User_Login.Password in MMS and compare - and nothing else.
-     *                     Requires LEGACY_LOGIN_ENABLED and a reachable MMS; any account without a
-     *                     legacy row (every LOCAL-only account) can no longer sign in.
-     *   'scrypt'          verify users.password_hash, as portal login does.
-     *
-     * Portal login is always 'scrypt' regardless of this setting.
-     */
-    EMBEDDED_LOGIN_PASSWORD_SOURCE: z.enum(['legacy-decrypt', 'scrypt']).default('legacy-decrypt'),
-    /** Value of mumin_mast_Cal_grades.Status_ID that counts as active. */
+    LOGIN_RESTRICTION_ENABLED: bool.default('true'),
+    LOGIN_RESTRICTION_MESSAGE: z
+      .string()
+      .min(1)
+      .max(500)
+      .default('You are not eligible to sign in. Please contact your Jamaat office.'),
+    /** mumin_master.status_id that counts as active (legacy mumin_mast_Cal_grades.Status_ID = 3). */
     MHP_ACTIVE_STATUS_ID: z.coerce.number().int().default(3),
-    /**
-     * Decrypt-and-compare against the live MHP_User_Login.Password when the local scrypt hash does
-     * not match, upgrading the account to scrypt on success. Needs LEGACY_DB_* and a reachable MMS;
-     * off by default, and refused in production because that password is reversible by design.
-     */
-    LEGACY_LOGIN_ENABLED: bool.default('false'),
-    LEGACY_DB_HOST: z.string().optional(),
-    LEGACY_DB_PORT: z.coerce.number().int().positive().default(1433),
-    LEGACY_DB_USER: z.string().optional(),
-    LEGACY_DB_PASSWORD: z.string().optional(),
-    LEGACY_DB_NAME: z.string().default('MMS'),
-    LEGACY_DB_ENCRYPT: bool.default('false'),
   })
   .superRefine((env, ctx) => {
-    // Embedded Login cannot verify anything if its only credential source is switched off. Failing
-    // at startup is far kinder than booting a service that 401s every single Embedded Login.
-    if (env.EMBEDDED_LOGIN_PASSWORD_SOURCE === 'legacy-decrypt' && !env.LEGACY_LOGIN_ENABLED) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['EMBEDDED_LOGIN_PASSWORD_SOURCE'],
-        message: "is 'legacy-decrypt', which needs LEGACY_LOGIN_ENABLED=true and a reachable MMS; set it to 'scrypt' otherwise",
-      });
-    }
-
-    // The decrypt fallback is useless without somewhere to read the ciphertext from, and silently
-    // doing nothing would look like "legacy login is on" while every legacy attempt failed.
-    if (env.LEGACY_LOGIN_ENABLED && !env.LEGACY_DB_HOST) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['LEGACY_DB_HOST'], message: 'is required when LEGACY_LOGIN_ENABLED is true' });
-    }
     const issuer = new URL(env.ISSUER);
     if (issuer.pathname !== '/' || issuer.search || issuer.hash) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ISSUER'], message: 'must be an origin without path' });
@@ -212,13 +184,6 @@ export const envSchema = z
       }
       if (env.AWS_ENDPOINT_URL) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['AWS_ENDPOINT_URL'], message: 'must not be set in production' });
-      }
-      if (env.LEGACY_LOGIN_ENABLED) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['LEGACY_LOGIN_ENABLED'],
-          message: 'must be false in production: it verifies against a reversible legacy password',
-        });
       }
     }
     if (env.COOKIE_SAMESITE === 'None' && !env.COOKIE_SECURE) {
@@ -251,3 +216,4 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   return parsed.data;
 }
+

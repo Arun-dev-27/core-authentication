@@ -2,14 +2,14 @@ import { envSchema } from './configuration';
 
 const base = {
   ISSUER: 'https://identity.example.com',
-  AUTH_DB_HOST: 'db',
-  AUTH_DB_USER: 'u',
-  AUTH_DB_PASSWORD: 'p',
-  AUTH_DB_NAME: 'd',
+  IDENTITY_DB_HOST: 'db',
+  IDENTITY_DB_USER: 'u',
+  IDENTITY_DB_PASSWORD: 'p',
+  IDENTITY_DB_NAME: 'd',
+  IDENTITY_DB_PORT: '5432',
+  IDENTITY_DB_SCHEMA: 's',
   REDIS_URL: 'redis://localhost:6379',
   AUTHZ_BASE_URL: 'https://authz.example.com',
-  // Embedded Login defaults to the MMS credential, which this fixture has no MMS for.
-  EMBEDDED_LOGIN_PASSWORD_SOURCE: 'scrypt',
 };
 const parse = (TRUST_PROXY?: string) => envSchema.safeParse({ ...base, ...(TRUST_PROXY === undefined ? {} : { TRUST_PROXY }) });
 

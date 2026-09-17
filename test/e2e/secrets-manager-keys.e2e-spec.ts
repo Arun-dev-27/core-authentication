@@ -11,7 +11,7 @@ import { createApp } from '../../src/bootstrap';
 
 /**
  * RS256 private keyset stored in AWS Secrets Manager (LocalStack), public keys shared via JWKS.
- * Requires: docker compose up -d localstack auth-postgres auth-redis
+ * Requires: docker compose up -d localstack auth-redis, plus the existing identity_db in .env.test
  */
 
 const ENDPOINT = process.env.LOCALSTACK_ENDPOINT ?? 'http://localhost:4566';

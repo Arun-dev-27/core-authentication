@@ -33,7 +33,7 @@ function build(stored: FederationSession | null, opts: { sidForHandle?: string |
     }),
   };
   const config = { env: { SESSION_IDLE_TTL_SECONDS: 1800, SESSION_ABSOLUTE_TTL_SECONDS: 28800 } };
-  const svc = new FederationSessionService(redis as never, { query: jest.fn() } as never, config as never, audit as never);
+  const svc = new FederationSessionService(redis as never, {} as never, config as never, audit as never);
   return { svc, audit };
 }
 

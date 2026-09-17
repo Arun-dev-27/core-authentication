@@ -71,17 +71,8 @@ export class LoginService {
 
     let user: AuthenticatedUser;
     try {
-      // input.clientId is set exactly for the flows that end in an RS256 assertion for a
-      // client (the Embedded Login); portal login passes null and keeps its existing behaviour.
-      user = await this.credentials.verify(
-        input.identifier,
-        input.identityType,
-        input.password,
-        { ip: meta.ip, clientId: input.clientId },
-        input.clientId !== null
-          ? { requireMhpEligibility: true, passwordSource: this.config.env.EMBEDDED_LOGIN_PASSWORD_SOURCE }
-          : { requireMhpEligibility: false, passwordSource: 'scrypt' },
-      );
+      // Embedded Login and portal login authenticate the same existing identity_db account the same way.
+      user = await this.credentials.verify(input.identifier, input.identityType, input.password, { ip: meta.ip, clientId: input.clientId });
     } catch (error) {
       if (error instanceof DomainError && error.code === 'INVALID_CREDENTIALS') await this.throttle.recordFailure(idHash);
       await this.audit.record({

@@ -36,6 +36,8 @@ export const Errors = {
   csrf: (reason: CsrfFailure = 'CSRF_TOKEN_MISMATCH') => new DomainError('CSRF_VALIDATION_FAILED', CSRF_MESSAGES[reason], 403, { reason }),
   invalidCredentials: () => new DomainError('INVALID_CREDENTIALS', 'Invalid ITS ID or password', 401),
   accountUnavailable: () => new DomainError('ACCOUNT_UNAVAILABLE', 'This account cannot sign in. Please contact support.', 403),
+  /** Login restriction (user_eligible). The message is operator-configured (LOGIN_RESTRICTION_MESSAGE). */
+  loginRestricted: (message: string) => new DomainError('LOGIN_RESTRICTED', message, 403),
   tooManyAttempts: (retryAfter: number) =>
     new DomainError('TOO_MANY_ATTEMPTS', 'Too many sign-in attempts. Please try again later.', 429, { retry_after: retryAfter }, {
       'retry-after': String(retryAfter),

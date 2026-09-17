@@ -1,10 +1,11 @@
 import { KeyObject, createPrivateKey } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
+import { InjectRepository } from '@nestjs/typeorm';
 import { calculateJwkThumbprint } from 'jose';
-import { DataSource } from 'typeorm';
+import { Repository } from 'typeorm';
 import { AppConfig } from '@config/config.module';
 import { Errors } from '@common/errors/domain-error';
+import { SigningKeyMetadata } from '@core/database/entities/auth/signing-key-metadata.entity';
 import { SIGNING_KEY_PROVIDER, SigningKeyProvider } from './key-providers';
 import { PublicJwk, StoredSigningKey, publishedKeys, toPublicJwk, validateKeyset } from './keyset';
 
@@ -29,7 +30,7 @@ export class KeyStore implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(SIGNING_KEY_PROVIDER) private readonly provider: SigningKeyProvider,
     private readonly config: AppConfig,
-    @InjectDataSource() private readonly db: DataSource,
+    @InjectRepository(SigningKeyMetadata) private readonly metadata: Repository<SigningKeyMetadata>,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -80,14 +81,20 @@ export class KeyStore implements OnModuleInit, OnModuleDestroy {
     try {
       for (const key of keys) {
         const thumbprint = key.status === 'RETIRED' ? null : await calculateJwkThumbprint(toPublicJwk(key));
-        await this.db.query(
-          `INSERT INTO signing_key_metadata (kid, alg, status, jwk_thumbprint) VALUES ($1, $2, $3, $4)
-           ON CONFLICT (kid) DO UPDATE SET
-             status = EXCLUDED.status,
-             jwk_thumbprint = COALESCE(EXCLUDED.jwk_thumbprint, signing_key_metadata.jwk_thumbprint),
-             status_changed_at = CASE WHEN signing_key_metadata.status <> EXCLUDED.status THEN now() ELSE signing_key_metadata.status_changed_at END`,
-          [key.kid, key.alg, key.status, thumbprint],
-        );
+        const existing = await this.metadata.findOneBy({ kid: key.kid });
+        if (!existing) {
+          await this.metadata.insert({ kid: key.kid, alg: key.alg, status: key.status, jwkThumbprint: thumbprint });
+        } else if (existing.status !== key.status || (thumbprint && existing.jwkThumbprint !== thumbprint)) {
+          await this.metadata.update(
+            { kid: key.kid },
+            {
+              status: key.status,
+              jwkThumbprint: thumbprint ?? existing.jwkThumbprint,
+              ...(existing.status !== key.status ? { statusChangedAt: () => 'now()' } : {}),
+              updatedAt: () => 'now()',
+            },
+          );
+        }
       }
     } catch (error) {
       this.logger.warn({ msg: 'could not record signing key metadata', err: error instanceof Error ? error.message : String(error) });

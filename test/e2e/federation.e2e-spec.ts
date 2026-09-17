@@ -9,7 +9,6 @@ import { buildDataSourceOptions } from '@core/database/data-source-options';
 import { AssertionService } from '@modules/assertions/services/assertion.service';
 import { AuthzClient } from '@modules/authorization-client/services/authz-client.service';
 import { ClientsStoreService } from '@modules/clients/services/clients-store.service';
-import { PasswordHasher } from '@modules/credentials/services/password-hasher';
 import { LogoutService } from '@modules/federation/services/logout.service';
 import { TransactionService } from '@modules/transactions/services/transaction.service';
 import { FileKeyProvider } from '@modules/keys/services/key-providers';
@@ -20,7 +19,16 @@ import { AssertionVerificationError, CoreAssertionVerifier, MemoryReplayStore } 
 import { createApp } from '../../src/bootstrap';
 
 /**
- * End-to-end federation flow against real PostgreSQL (auth test DB) and Redis.
+ * End-to-end federation flow against an EXISTING identity_db (schema, synced tables and the 8 auth tables must
+ * already exist) and Redis. The test creates, alters and deletes nothing in the database: it signs in as users
+ * that already exist, given in .env.test (scenarios whose variables are unset are skipped):
+ *
+ *   E2E_ITS_ID / E2E_PASSWORD                              active, eligible, login allowed   (required)
+ *   E2E_LOCK_ITS_ID / E2E_LOCK_PASSWORD                    any valid user; LOCKED for LOGIN_ACCOUNT_LOCK_SECONDS by the test
+ *   E2E_INELIGIBLE_ITS_ID / E2E_INELIGIBLE_PASSWORD        not in user_eligible
+ *   E2E_INACTIVE_ITS_ID / E2E_INACTIVE_PASSWORD            mumin_master.status_id <> 3
+ *   E2E_NOT_ALLOWED_ITS_ID / E2E_NOT_ALLOWED_PASSWORD      users.allow_login = false
+ *   E2E_FLUSH_REDIS=true                                   flush REDIS_URL's db first (only a private test Redis db)
  * The Authorization service is replaced by an in-memory client registry; back-channel logout
  * endpoints are a local HTTP server. Run: docker compose up -d && npm run test:e2e
  */
@@ -29,7 +37,23 @@ const env = loadEnv();
 const ISSUER = new URL(env.ISSUER).origin;
 const RMS = 'https://rms.example.test';
 const AMS = 'https://ams.example.test';
-const PASSWORD = `pw-${Date.now()}-Aa1!`;
+const need = (name: string) => {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} must be set in .env.test to an existing identity_db user`);
+  return value;
+};
+const MEMBER = need('E2E_ITS_ID');
+const PASSWORD = need('E2E_PASSWORD');
+const optionalUser = (prefix: string) => {
+  const itsId = process.env[`${prefix}_ITS_ID`];
+  const password = process.env[`${prefix}_PASSWORD`];
+  return itsId && password ? { itsId, password } : null;
+};
+const LOCK = optionalUser('E2E_LOCK');
+const INELIGIBLE = optionalUser('E2E_INELIGIBLE');
+const INACTIVE = optionalUser('E2E_INACTIVE');
+const NOT_ALLOWED = optionalUser('E2E_NOT_ALLOWED');
+const itWith = <T>(user: T | null) => (user ? it : it.skip);
 
 let app: NestFastifyApplication;
 let db: DataSource;
@@ -122,28 +146,16 @@ beforeAll(async () => {
 
   db = new DataSource(buildDataSourceOptions(env));
   await db.initialize();
-  await db.runMigrations();
-  await db.query('TRUNCATE users, auth_sessions, auth_session_clients, auth_login_attempts, auth_audit_events, signing_key_metadata CASCADE');
-  const hasher = new PasswordHasher();
-  const hash = await hasher.hash(PASSWORD);
-  await db.query(
-    `INSERT INTO users (its_id, identity_type, username, name, password_hash, password_algo, status) VALUES
-      ('ITS12345', 'ITS', 'its12345', 'Test Member', $1, 'scrypt', 'ACTIVE'),
-      ('ITS99999', 'ITS', 'its99999', 'Disabled Member', $1, 'scrypt', 'DISABLED'),
-      ('ITS55555', 'ITS', 'its55555', 'Throttled Member', $1, 'scrypt', 'ACTIVE'),
-      ('NITS-0001', 'NON_ITS', 'guest@example.test', 'Guest', $1, 'scrypt', 'ACTIVE')`,
-    [hash],
-  );
 
   redis = new Redis(env.REDIS_URL);
-  await redis.flushdb();
+  if (process.env.E2E_FLUSH_REDIS === 'true') await redis.flushdb();
 
   app = await createApp(env);
   const authz = app.get(AuthzClient);
   jest.spyOn(app.get(ClientsStoreService), 'findByClientId').mockImplementation(async (id: string) => registry()[id] ?? null);
   jest.spyOn(authz, 'launchableApplications').mockResolvedValue([]);
   jest.spyOn(authz, 'syncUser').mockResolvedValue();
-  jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
+  jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Test Member', requires_scope_selection: false, assignments: [] });
   jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
   await app.init();
   await app.getHttpAdapter().getInstance().ready();
@@ -254,24 +266,24 @@ describe('authentication, assertion and SSO', () => {
 
   it('requires CSRF token and same-origin request', async () => {
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
-    const noCsrf = await postLogin({ ...boot!, csrf: 'wrong' }, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    const noCsrf = await postLogin({ ...boot!, csrf: 'wrong' }, 'rms-web-test', { its_id: MEMBER, password: PASSWORD });
     expect(noCsrf.json()).toMatchObject({ success: false, session: null, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISMATCH' } } });
-    const crossOrigin = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD }, { origin: RMS });
+    const crossOrigin = await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD }, { origin: RMS });
     expect(crossOrigin.json()).toMatchObject({ success: false, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'ORIGIN_HEADER_MISMATCH' } } });
     const missing = await app.inject({
       method: 'POST',
       url: '/embed/login',
       headers: { origin: ISSUER, 'content-type': 'application/json' },
-      payload: { transaction_id: boot!.transaction_id, client_id: 'rms-web-test', its_id: 'ITS12345', password: PASSWORD },
+      payload: { transaction_id: boot!.transaction_id, client_id: 'rms-web-test', its_id: MEMBER, password: PASSWORD },
     });
     expect(missing.json()).toMatchObject({ success: false, error: { code: 'CSRF_VALIDATION_FAILED', details: { reason: 'CSRF_TOKEN_MISSING' } } });
   });
 
   it('returns the same error for wrong password and unknown user', async () => {
     const a = await openLogin('rms-web-test', { origin: RMS });
-    const wrong = await postLogin(a.boot!, 'rms-web-test', { its_id: 'ITS12345', password: 'nope' });
+    const wrong = await postLogin(a.boot!, 'rms-web-test', { its_id: MEMBER, password: 'nope' });
     const b = await openLogin('rms-web-test', { origin: RMS });
-    const unknown = await postLogin(b.boot!, 'rms-web-test', { its_id: 'ITS00000', password: 'nope' });
+    const unknown = await postLogin(b.boot!, 'rms-web-test', { its_id: '999999999', password: 'nope' });
     expect(wrong.statusCode).toBe(401);
     expect(unknown.statusCode).toBe(401);
     expect(wrong.json().error.code).toBe('INVALID_CREDENTIALS');
@@ -280,7 +292,7 @@ describe('authentication, assertion and SSO', () => {
 
   it('authenticates and returns a complete RS256 compact assertion with minimal claims', async () => {
     const { boot, txn, state } = await openLogin('rms-web-test', { origin: RMS });
-    const res = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    const res = await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body).toMatchObject({
@@ -293,7 +305,7 @@ describe('authentication, assertion and SSO', () => {
         token_type: 'CoreAssertion',
         audience: 'rms-web-test',
         expires_in: env.ASSERTION_TTL_SECONDS,
-        user: { id: 'ITS12345', its_id: 'ITS12345', status: 'ACTIVE' },
+        user: { id: MEMBER, its_id: MEMBER, status: 'ACTIVE' },
         role_type: 'NONE',
         active_role: null,
         roles: [],
@@ -311,7 +323,7 @@ describe('authentication, assertion and SSO', () => {
     expect(header).toMatchObject({ alg: 'RS256', typ: 'JWT' });
     const claims = decodeJwt(assertion);
     expect(Object.keys(claims).sort()).toEqual(['aud', 'auth_time', 'exp', 'iat', 'iss', 'jti', 'sid', 'sub', 'txn']);
-    expect(claims).toMatchObject({ iss: ISSUER, sub: 'ITS12345', aud: 'rms-web-test', txn });
+    expect(claims).toMatchObject({ iss: ISSUER, sub: MEMBER, aud: 'rms-web-test', txn });
     expect((claims.exp as number) - (claims.iat as number)).toBe(env.ASSERTION_TTL_SECONDS);
 
     const setCookie = res.cookies.find((c) => c.name === env.SESSION_COOKIE_NAME)!;
@@ -324,13 +336,13 @@ describe('authentication, assertion and SSO', () => {
     sid = claims.sid as string;
 
     const verified = await (await verifierFor('rms-web-test')).verifyLoginAssertion(rmsAssertion, { transactionId: txn });
-    expect(verified.itsId).toBe('ITS12345');
+    expect(verified.itsId).toBe(MEMBER);
   });
 
   it('cannot complete the same transaction twice', async () => {
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
-    expect((await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).statusCode).toBe(200);
-    const again = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    expect((await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD })).statusCode).toBe(200);
+    const again = await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD });
     expect(again.statusCode).toBe(409);
     expect(again.json()).toMatchObject({ success: false, session: null, error: { code: 'TRANSACTION_ALREADY_USED' } });
   });
@@ -350,15 +362,15 @@ describe('authentication, assertion and SSO', () => {
 
   it('SSO: a second application gets its own assertion from the same federation session', async () => {
     const { boot, txn } = await openLogin('ams-web-test', { origin: AMS, cookie });
-    expect(boot!.session).toMatchObject({ its_id: 'ITS12345' });
+    expect(boot!.session).toMatchObject({ its_id: MEMBER });
     const res = await app.inject({ method: 'POST', url: '/embed/continue', headers: { origin: ISSUER, 'x-csrf-token': boot!.csrf, cookie }, payload: { transaction_id: txn, client_id: 'ams-web-test' } });
     expect(res.statusCode).toBe(200);
     const claims = decodeJwt(res.json().session.token);
-    expect(claims).toMatchObject({ aud: 'ams-web-test', sid, sub: 'ITS12345' });
+    expect(claims).toMatchObject({ aud: 'ams-web-test', sid, sub: MEMBER });
     expect(res.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', audience: 'ams-web-test', delivery: { target_origin: AMS } } });
 
     const session = await app.inject({ method: 'GET', url: '/auth/session', headers: { cookie } });
-    expect(session.json()).toMatchObject({ authenticated: true, its_id: 'ITS12345', clients: ['ams-web-test', 'rms-web-test'] });
+    expect(session.json()).toMatchObject({ authenticated: true, its_id: MEMBER, clients: ['ams-web-test', 'rms-web-test'] });
   });
 
   it('browser federation logout requires a matching logout_hint from a registered origin', async () => {
@@ -396,42 +408,64 @@ describe('authentication, assertion and SSO', () => {
 });
 
 describe('account and brute-force protection', () => {
-  it('reveals disabled status only after a correct password', async () => {
+  itWith(NOT_ALLOWED)('reveals Allow_Login = false only after a correct password', async () => {
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
-    const res = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS99999', password: PASSWORD });
+    const res = await postLogin(boot!, 'rms-web-test', { its_id: NOT_ALLOWED!.itsId, password: NOT_ALLOWED!.password });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('ACCOUNT_UNAVAILABLE');
   });
 
-  it('locks an identifier after repeated failures', async () => {
+  itWith(LOCK)('locks an identifier after repeated failures', async () => {
     const codes: number[] = [];
     for (let i = 0; i < env.LOGIN_MAX_FAILURES_PER_IDENTIFIER + 1; i++) {
       const { boot } = await openLogin('rms-web-test', { origin: RMS });
-      codes.push((await postLogin(boot!, 'rms-web-test', { its_id: 'ITS55555', password: 'wrong' }, { 'x-forwarded-for': `10.0.0.${i}` })).statusCode);
+      codes.push((await postLogin(boot!, 'rms-web-test', { its_id: LOCK!.itsId, password: 'wrong' }, { 'x-forwarded-for': `10.0.0.${i}` })).statusCode);
     }
     expect(codes.slice(0, env.LOGIN_MAX_FAILURES_PER_IDENTIFIER)).toEqual(Array(env.LOGIN_MAX_FAILURES_PER_IDENTIFIER).fill(401));
     expect(codes.at(-1)).toBe(429);
     // even the correct password is refused while locked
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
-    const locked = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS55555', password: PASSWORD });
+    const locked = await postLogin(boot!, 'rms-web-test', { its_id: LOCK!.itsId, password: LOCK!.password });
     expect(locked.statusCode).toBe(429);
     expect(locked.headers['retry-after']).toBeDefined();
   });
 
-  it('supports Non-ITS member sign-in', async () => {
-    const { boot } = await openLogin('rms-web-test', { origin: RMS });
-    const res = await postLogin(boot!, 'rms-web-test', { identity_type: 'NON_ITS', identifier: 'Guest@Example.test', password: PASSWORD });
-    expect(res.statusCode).toBe(200);
-    expect(decodeJwt(res.json().session.token).sub).toBe('NITS-0001');
+  itWith(INELIGIBLE)('shows the configured login restriction to a non-eligible user after a correct password only', async () => {
+    const a = await openLogin('rms-web-test', { origin: RMS });
+    const wrong = await postLogin(a.boot!, 'rms-web-test', { its_id: INELIGIBLE!.itsId, password: 'nope' });
+    expect(wrong.json().error.code).toBe('INVALID_CREDENTIALS');
+    const b = await openLogin('rms-web-test', { origin: RMS });
+    const right = await postLogin(b.boot!, 'rms-web-test', { its_id: INELIGIBLE!.itsId, password: INELIGIBLE!.password });
+    expect(right.statusCode).toBe(403);
+    expect(right.json().error).toMatchObject({ code: 'LOGIN_RESTRICTED', message: env.LOGIN_RESTRICTION_MESSAGE });
   });
 
+  itWith(INACTIVE)('rejects an account whose Status_ID is not active exactly like an unknown one', async () => {
+    const { boot } = await openLogin('rms-web-test', { origin: RMS });
+    const res = await postLogin(boot!, 'rms-web-test', { its_id: INACTIVE!.itsId, password: INACTIVE!.password });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('INVALID_CREDENTIALS');
+  });
 
-  it('never stores plaintext passwords', async () => {
-    const rows = (await db.query(`SELECT password_hash FROM users`)) as { password_hash: string }[];
-    for (const row of rows) {
-      expect(row.password_hash.startsWith('scrypt$')).toBe(true);
-      expect(row.password_hash).not.toContain(PASSWORD);
-    }
+  it('rejects Non-ITS sign-in: identity_db holds ITS members only', async () => {
+    const { boot } = await openLogin('rms-web-test', { origin: RMS });
+    const res = await postLogin(boot!, 'rms-web-test', { identity_type: 'NON_ITS', identifier: 'Guest@Example.test', password: PASSWORD });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('never writes to the synced identity tables', async () => {
+    const snapshot = async () =>
+      db.query(
+        `SELECT (SELECT count(*) FROM users) AS users, (SELECT max(updated_at) FROM users) AS users_updated,
+                (SELECT count(*) FROM user_eligible) AS eligible, (SELECT max(updated_at) FROM user_eligible) AS eligible_updated,
+                (SELECT count(*) FROM mumin_master) AS mumin, (SELECT max(updated_at) FROM mumin_master) AS mumin_updated,
+                (SELECT md5(string_agg(u::text, '|' ORDER BY u.id)) FROM users u WHERE u.mumin_id = $1::int) AS member_row`,
+        [MEMBER],
+      );
+    const before = await snapshot();
+    const { boot } = await openLogin('rms-web-test', { origin: RMS });
+    expect((await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD })).statusCode).toBe(200);
+    expect(await snapshot()).toEqual(before);
   });
 });
 
@@ -439,7 +473,7 @@ describe('signing key rotation', () => {
   it('stages, promotes and keeps previously issued assertions verifiable', async () => {
     const keyStore = app.get(KeyStore);
     const { boot, txn } = await openLogin('rms-web-test', { origin: RMS });
-    const before = (await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).json().session.token as string;
+    const before = (await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD })).json().session.token as string;
     const oldKid = decodeProtectedHeader(before).kid;
 
     await keyProvider.save(rotateKeyset(await keyProvider.load(), 'stage', { bits: 2048 }));
@@ -450,12 +484,12 @@ describe('signing key rotation', () => {
     await keyStore.reload();
 
     const next = await openLogin('rms-web-test', { origin: RMS });
-    const after = (await postLogin(next.boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD })).json().session.token as string;
+    const after = (await postLogin(next.boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD })).json().session.token as string;
     expect(decodeProtectedHeader(after).kid).not.toBe(oldKid);
 
     const verifier = await verifierFor('rms-web-test');
-    await expect(verifier.verifyLoginAssertion(before, { transactionId: txn })).resolves.toMatchObject({ itsId: 'ITS12345' });
-    await expect(verifier.verifyLoginAssertion(after, { transactionId: next.txn })).resolves.toMatchObject({ itsId: 'ITS12345' });
+    await expect(verifier.verifyLoginAssertion(before, { transactionId: txn })).resolves.toMatchObject({ itsId: MEMBER });
+    await expect(verifier.verifyLoginAssertion(after, { transactionId: next.txn })).resolves.toMatchObject({ itsId: MEMBER });
   });
 });
 
@@ -485,7 +519,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
       method: 'POST',
       url: path,
       headers: { origin: ISSUER, 'x-csrf-token': boot.csrf, 'content-type': 'application/json' },
-      payload: { transaction_id: boot.transaction_id, its_id: 'ITS12345', password: PASSWORD },
+      payload: { transaction_id: boot.transaction_id, its_id: MEMBER, password: PASSWORD },
     });
     expect(login.statusCode).toBe(200);
     return { boot, cookie: sessionCookie(login), body: login.json() };
@@ -493,7 +527,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
 
   afterEach(() => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Test Member', requires_scope_selection: false, assignments: [] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
   });
 
@@ -511,7 +545,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
   });
 
   it('POST /login returns every assignment and an unscoped token when a workspace must be selected', async () => {
-    jest.spyOn(app.get(AuthzClient), 'getAssignments').mockResolvedValueOnce({ its_id: 'ITS12345', name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
+    jest.spyOn(app.get(AuthzClient), 'getAssignments').mockResolvedValueOnce({ its_id: MEMBER, name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
     const { body } = await portalLogin('/login');
     expect(body).toMatchObject({
       success: true,
@@ -520,7 +554,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
       request_id: expect.any(String),
       session: {
         token_type: 'Bearer',
-        user: { id: 'ITS12345', its_id: 'ITS12345', name: 'Murtaza Saifuddin', status: 'ACTIVE' },
+        user: { id: MEMBER, its_id: MEMBER, name: 'Murtaza Saifuddin', status: 'ACTIVE' },
         role_type: 'MULTI',
         active_role: null,
         modules: [],
@@ -539,7 +573,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
 
   it('POST /login activates the only workspace automatically (token carries the scope, never permissions)', async () => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValueOnce({ its_id: 'ITS12345', name: 'Burhan', requires_scope_selection: false, assignments: [WORKSPACES[0]] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValueOnce({ its_id: MEMBER, name: 'Burhan', requires_scope_selection: false, assignments: [WORKSPACES[0]] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce({ active_scope: WORKSPACES[0], permissions: UTIL_PERMS });
     const { body } = await portalLogin();
     expect(body).toMatchObject({
@@ -558,7 +592,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
       },
     });
     const claims = await claimsOf(body.session.token);
-    expect(claims).toMatchObject({ sub: 'ITS12345', role_id: ROLE_BU, scope_type: 'BUSINESS_UNIT', scope_id: BU_RMS });
+    expect(claims).toMatchObject({ sub: MEMBER, role_id: ROLE_BU, scope_type: 'BUSINESS_UNIT', scope_id: BU_RMS });
     expect(Object.keys(claims)).not.toContain('permissions');
   });
 
@@ -577,7 +611,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
 
   it('POST /select-scope issues a scoped token only for an assigned workspace, with session + CSRF', async () => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
     const { boot, cookie } = await portalLogin();
     const choice = { transaction_id: boot.transaction_id, role_id: ROLE_UTIL, scope_type: 'UTILITY', scope_id: UT_HELPDESK };
     const select = (headers: Record<string, string>, payload: Record<string, unknown> = choice, url = '/select-scope') =>
@@ -592,7 +626,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     const rejected = await select({});
     expect(rejected.statusCode).toBe(403);
     expect(rejected.json()).toMatchObject({ success: false, session: null, error: { code: 'SCOPE_NOT_ASSIGNED' } });
-    expect(resolve).toHaveBeenLastCalledWith('ITS12345', { role_id: ROLE_UTIL, scope_type: 'UTILITY', scope_id: UT_HELPDESK });
+    expect(resolve).toHaveBeenLastCalledWith(MEMBER, { role_id: ROLE_UTIL, scope_type: 'UTILITY', scope_id: UT_HELPDESK });
 
     resolve.mockResolvedValueOnce({ active_scope: WORKSPACES[1], permissions: UTIL_PERMS });
     const ok = await select({});
@@ -618,12 +652,12 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     expect(switched.json().session.active_role).toMatchObject({ tenant_id: UT_ZONE, tenant_name: 'Zone Support' });
 
     const listed = await app.inject({ method: 'GET', url: '/portal/assignments', headers: { cookie } });
-    expect(listed.json()).toMatchObject({ its_id: 'ITS12345', requires_scope_selection: true, assignments: WORKSPACES });
+    expect(listed.json()).toMatchObject({ its_id: MEMBER, requires_scope_selection: true, assignments: WORKSPACES });
   });
 
   it('portal CSRF token is bound to the signed-in session (outlives TRANSACTION_TTL_SECONDS, unusable by another session)', async () => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Murtaza Saifuddin', requires_scope_selection: true, assignments: WORKSPACES });
     const first = await portalLogin();
     const second = await portalLogin();
     const txn = await app.get(TransactionService).get(first.boot.transaction_id);
@@ -641,7 +675,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
 
   it('administrator force-logout needs a CORE workspace with USER_MGMT edit, verified live', async () => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Platform Admin', requires_scope_selection: true, assignments: [CORE_WS, WORKSPACES[0]] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Platform Admin', requires_scope_selection: true, assignments: [CORE_WS, WORKSPACES[0]] });
     const { boot, cookie, body } = await portalLogin();
     const resolve = jest.spyOn(authz, 'resolveAssignment');
     const tokenFor = async (ws: typeof CORE_WS | (typeof WORKSPACES)[number], audience: string) => {
@@ -657,7 +691,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     const coreIdentityToken = await tokenFor(CORE_WS, 'identity');
     const coreAuthzToken = await tokenFor(CORE_WS, 'authorization');
     const buIdentityToken = await tokenFor(WORKSPACES[0], 'identity');
-    const forceLogout = (token: string) => app.inject({ method: 'POST', url: '/federation/logout', headers: { authorization: `Bearer ${token}` }, payload: { its_id: 'ITS12345' } });
+    const forceLogout = (token: string) => app.inject({ method: 'POST', url: '/federation/logout', headers: { authorization: `Bearer ${token}` }, payload: { its_id: MEMBER } });
 
     expect((await forceLogout('not-a-token')).statusCode).toBe(401);
     expect((await forceLogout(coreAuthzToken)).statusCode).toBe(401); // wrong audience
@@ -689,7 +723,7 @@ describe('Core login with workspaces (POST /login, POST /select-scope) and JWKS 
     // transaction creation reads the client configuration fresh: no refresh call needed
     expect((await createTxn(NEW_ORIGIN)).statusCode).toBe(201);
 
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Platform Admin', requires_scope_selection: true, assignments: [CORE_WS, WORKSPACES[0]] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Platform Admin', requires_scope_selection: true, assignments: [CORE_WS, WORKSPACES[0]] });
     const { boot, cookie } = await portalLogin();
     const resolve = jest.spyOn(authz, 'resolveAssignment');
     const identityToken = async (ws: typeof CORE_WS | (typeof WORKSPACES)[number]) => {
@@ -745,7 +779,7 @@ describe('transaction API (POST /auth/transaction, GET /auth/transaction/:id)', 
     const page = await app.inject({ method: 'GET', url: body.login_url.slice(ISSUER.length) });
     expect(bootOf(page.body).csrf).toBe(body.csrf);
 
-    const login = await postLogin({ transaction_id: body.transaction_id, csrf: body.csrf }, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    const login = await postLogin({ transaction_id: body.transaction_id, csrf: body.csrf }, 'rms-web-test', { its_id: MEMBER, password: PASSWORD });
     expect(login.statusCode).toBe(200);
     expect(login.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', delivery: { type: 'MIQAAT_AUTH_SUCCESS', transaction_id: body.transaction_id, target_origin: RMS } } });
 
@@ -779,23 +813,23 @@ describe('embedded login envelope (same pattern as the Core Portal login)', () =
 
   afterEach(() => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Test Member', requires_scope_selection: false, assignments: [] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValue(null);
   });
 
   it('single role: SINGLE with active_role, modules and permissions; the assertion stays identity-only', async () => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValueOnce({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: false, assignments: [BU_ROLE] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValueOnce({ its_id: MEMBER, name: 'Test Member', requires_scope_selection: false, assignments: [BU_ROLE] });
     jest.spyOn(authz, 'resolveAssignment').mockResolvedValueOnce({ active_scope: BU_ROLE, permissions: { DASHBOARD: ['view'], RMS_REGISTRATION: ['view', 'create'] } });
     const { boot } = await openLogin('rms-web-test', { origin: RMS });
-    const res = await postLogin(boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    const res = await postLogin(boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
       success: true,
       scope: 'BUSINESS_UNIT',
       session: {
         token_type: 'CoreAssertion',
-        user: { its_id: 'ITS12345', name: 'Test Member', status: 'ACTIVE' },
+        user: { its_id: MEMBER, name: 'Test Member', status: 'ACTIVE' },
         role_type: 'SINGLE',
         active_role: { role_id: BU_ROLE.role_id, role_name: 'Business Unit Admin', level: 'BUSINESS_UNIT_ADMIN', tenant_id: BU_ID, tenant_name: 'RMS', scope_type: 'BUSINESS_UNIT', scope_id: BU_ID },
         roles: [expect.objectContaining({ role_id: BU_ROLE.role_id, level: 'BUSINESS_UNIT_ADMIN' })],
@@ -809,9 +843,9 @@ describe('embedded login envelope (same pattern as the Core Portal login)', () =
 
   it('several roles: MULTI with every role and no active role, for password sign-in and SSO continue', async () => {
     const authz = app.get(AuthzClient);
-    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: 'ITS12345', name: 'Test Member', requires_scope_selection: true, assignments: [BU_ROLE, UT_ROLE] });
+    jest.spyOn(authz, 'getAssignments').mockResolvedValue({ its_id: MEMBER, name: 'Test Member', requires_scope_selection: true, assignments: [BU_ROLE, UT_ROLE] });
     const first = await openLogin('rms-web-test', { origin: RMS });
-    const login = await postLogin(first.boot!, 'rms-web-test', { its_id: 'ITS12345', password: PASSWORD });
+    const login = await postLogin(first.boot!, 'rms-web-test', { its_id: MEMBER, password: PASSWORD });
     expect(login.json()).toMatchObject({ success: true, scope: null, session: { role_type: 'MULTI', active_role: null, modules: [], permissions: {} } });
     expect(login.json().session.roles.map((r: { level: string; tenant_name: string }) => `${r.level}:${r.tenant_name}`)).toEqual(['BUSINESS_UNIT_ADMIN:RMS', 'UTILITY_ADMIN:Helpdesk']);
 
@@ -820,6 +854,6 @@ describe('embedded login envelope (same pattern as the Core Portal login)', () =
     const cont = await app.inject({ method: 'POST', url: '/embed/continue', headers: { origin: ISSUER, 'x-csrf-token': second.boot!.csrf, cookie }, payload: { transaction_id: second.txn, client_id: 'ams-web-test' } });
     expect(cont.statusCode).toBe(200);
     expect(cont.json()).toMatchObject({ success: true, session: { token_type: 'CoreAssertion', audience: 'ams-web-test', role_type: 'MULTI', roles: expect.any(Array), delivery: { type: 'MIQAAT_AUTH_SUCCESS', transaction_id: second.txn, target_origin: AMS } } });
-    expect(decodeJwt(cont.json().session.token)).toMatchObject({ aud: 'ams-web-test', sub: 'ITS12345' });
+    expect(decodeJwt(cont.json().session.token)).toMatchObject({ aud: 'ams-web-test', sub: MEMBER });
   });
 });

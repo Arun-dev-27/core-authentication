@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { currentCorrelationId } from '@common/logging/request-context';
+import { AuthAuditEvent } from '@core/database/entities/auth/auth-audit-event.entity';
 
-export interface AuthAuditEvent {
+export interface AuditEventInput {
   eventType: string;
   outcome: 'SUCCESS' | 'FAILURE' | 'INFO';
   itsId?: string | null;
@@ -20,9 +21,9 @@ export interface AuthAuditEvent {
 export class AuditService {
   private readonly logger = new Logger('Audit');
 
-  constructor(@InjectDataSource() private readonly db: DataSource) {}
+  constructor(@InjectRepository(AuthAuditEvent) private readonly events: Repository<AuthAuditEvent>) {}
 
-  async record(event: AuthAuditEvent): Promise<void> {
+  async record(event: AuditEventInput): Promise<void> {
     const correlationId = currentCorrelationId() ?? null;
     this.logger.log({
       msg: 'audit',
@@ -35,21 +36,19 @@ export class AuditService {
       reason: event.metadata?.reason,
     });
     try {
-      await this.db.query(
-        `INSERT INTO auth_audit_events (event_type, outcome, its_id, sid, client_id, jti, ip_address, user_agent, correlation_id, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [
-          event.eventType,
-          event.outcome,
-          event.itsId ?? null,
-          event.sid ?? null,
-          event.clientId ?? null,
-          event.jti ?? null,
-          event.ip ?? null,
-          event.userAgent?.slice(0, 512) ?? null,
+      await this.events.save(
+        this.events.create({
+          eventType: event.eventType,
+          outcome: event.outcome,
+          itsId: event.itsId ?? null,
+          sid: event.sid ?? null,
+          clientId: event.clientId ?? null,
+          jti: event.jti ?? null,
+          ipAddress: event.ip ?? null,
+          userAgent: event.userAgent?.slice(0, 512) ?? null,
           correlationId,
-          event.metadata ? JSON.stringify(event.metadata) : null,
-        ],
+          metadata: event.metadata ?? null,
+        }),
       );
     } catch (error) {
       this.logger.error({ msg: 'audit write failed', event_type: event.eventType, err: error });
