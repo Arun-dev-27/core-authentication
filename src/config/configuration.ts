@@ -158,6 +158,17 @@ export const envSchema = z
      * in an RS256 assertion for a client. Portal login is not affected either way.
      */
     MHP_ELIGIBILITY_REQUIRED: bool.default('true'),
+    /**
+     * Which credential Embedded Login checks once the eligibility gate has passed.
+     *
+     *   'legacy-decrypt'  decrypt MHP_User_Login.Password in MMS and compare - and nothing else.
+     *                     Requires LEGACY_LOGIN_ENABLED and a reachable MMS; any account without a
+     *                     legacy row (every LOCAL-only account) can no longer sign in.
+     *   'scrypt'          verify users.password_hash, as portal login does.
+     *
+     * Portal login is always 'scrypt' regardless of this setting.
+     */
+    EMBEDDED_LOGIN_PASSWORD_SOURCE: z.enum(['legacy-decrypt', 'scrypt']).default('legacy-decrypt'),
     /** Value of mumin_mast_Cal_grades.Status_ID that counts as active. */
     MHP_ACTIVE_STATUS_ID: z.coerce.number().int().default(3),
     /**
@@ -174,6 +185,16 @@ export const envSchema = z
     LEGACY_DB_ENCRYPT: bool.default('false'),
   })
   .superRefine((env, ctx) => {
+    // Embedded Login cannot verify anything if its only credential source is switched off. Failing
+    // at startup is far kinder than booting a service that 401s every single Embedded Login.
+    if (env.EMBEDDED_LOGIN_PASSWORD_SOURCE === 'legacy-decrypt' && !env.LEGACY_LOGIN_ENABLED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EMBEDDED_LOGIN_PASSWORD_SOURCE'],
+        message: "is 'legacy-decrypt', which needs LEGACY_LOGIN_ENABLED=true and a reachable MMS; set it to 'scrypt' otherwise",
+      });
+    }
+
     // The decrypt fallback is useless without somewhere to read the ciphertext from, and silently
     // doing nothing would look like "legacy login is on" while every legacy attempt failed.
     if (env.LEGACY_LOGIN_ENABLED && !env.LEGACY_DB_HOST) {

@@ -8,12 +8,15 @@ const base = {
   AUTH_DB_NAME: 'd',
   REDIS_URL: 'redis://localhost:6379',
   AUTHZ_BASE_URL: 'https://authz.example.com',
+  // Embedded Login defaults to the MMS credential, which this fixture has no MMS for.
+  EMBEDDED_LOGIN_PASSWORD_SOURCE: 'scrypt',
 };
 const parse = (TRUST_PROXY?: string) => envSchema.safeParse({ ...base, ...(TRUST_PROXY === undefined ? {} : { TRUST_PROXY }) });
 
 describe('TRUST_PROXY', () => {
   it('defaults to no proxy trust', () => {
     const r = parse();
+    expect(r.success).toBe(true);
     expect(r.success && r.data.TRUST_PROXY).toBe(false);
   });
 

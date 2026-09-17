@@ -78,7 +78,9 @@ export class LoginService {
         input.identityType,
         input.password,
         { ip: meta.ip, clientId: input.clientId },
-        { requireMhpEligibility: input.clientId !== null },
+        input.clientId !== null
+          ? { requireMhpEligibility: true, passwordSource: this.config.env.EMBEDDED_LOGIN_PASSWORD_SOURCE }
+          : { requireMhpEligibility: false, passwordSource: 'scrypt' },
       );
     } catch (error) {
       if (error instanceof DomainError && error.code === 'INVALID_CREDENTIALS') await this.throttle.recordFailure(idHash);

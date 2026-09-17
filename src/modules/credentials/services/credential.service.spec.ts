@@ -6,8 +6,11 @@ import { PasswordHasher } from './password-hasher';
 
 const PASSWORD = 'CorrectHorse-9';
 const ITS = '31267890';
-const EMBEDDED = { requireMhpEligibility: true };
-const PORTAL = { requireMhpEligibility: false };
+// The gate is independent of which credential is checked, so the gate tests use the scrypt
+// source and keep asserting on a local hash.
+const EMBEDDED = { requireMhpEligibility: true, passwordSource: 'scrypt' } as const;
+const EMBEDDED_LEGACY = { requireMhpEligibility: true, passwordSource: 'legacy-decrypt' } as const;
+const PORTAL = { requireMhpEligibility: false, passwordSource: 'scrypt' } as const;
 const CTX = { ip: '203.0.113.7', clientId: 'rms-web-dev' };
 
 const config = (over: Partial<Env> = {}) =>
@@ -134,43 +137,65 @@ describe('CredentialService - the existing flows are unchanged', () => {
   });
 });
 
-describe('CredentialService - legacy password fallback', () => {
-  it('is not consulted while the scrypt hash still matches', async () => {
+describe("CredentialService - Embedded Login with passwordSource 'legacy-decrypt'", () => {
+  it('authenticates purely on the decrypted MMS password, ignoring the local hash', async () => {
     const { svc, legacy } = build(await row({ legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
-    await expect(svc.verify(ITS, 'ITS', PASSWORD, CTX, EMBEDDED)).resolves.toMatchObject({ itsId: ITS });
-    expect(legacy.verify).not.toHaveBeenCalled();
+    // Not the scrypt password: only the legacy compare can be what accepted this.
+    await expect(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED_LEGACY)).resolves.toMatchObject({ itsId: ITS });
+    expect(legacy.verify).toHaveBeenCalledWith(4242, 'i');
   });
 
-  it('accepts a password that only the legacy ciphertext matches, then upgrades to scrypt', async () => {
-    const { svc, legacy, db } = build(await row({ legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
-    await expect(svc.verify(ITS, 'ITS', 'changed-in-mms', CTX, EMBEDDED)).resolves.toMatchObject({ itsId: ITS });
-    expect(legacy.verify).toHaveBeenCalledWith(4242, 'changed-in-mms');
-    const upgrades = db.query.mock.calls.filter(([sql]) => /SET password_hash = \$2, password_algo = 'scrypt'/.test(sql));
-    expect(upgrades).toHaveLength(1);
-    expect(reasonsOf(db)).toContain('LEGACY_PASSWORD_UPGRADED');
-  });
-
-  it('authenticates a never-migrated account that has no scrypt hash at all', async () => {
-    const { svc, legacy } = build(await row({ password_hash: null, legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
-    await expect(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED)).resolves.toMatchObject({ itsId: ITS });
+  it('refuses a password the legacy ciphertext does not match, even if the scrypt hash does', async () => {
+    const { svc, legacy } = build(await row({ legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: false });
+    await expectInvalid(svc.verify(ITS, 'ITS', PASSWORD, CTX, EMBEDDED_LEGACY));
     expect(legacy.verify).toHaveBeenCalled();
   });
 
-  it('refuses a null-hash account when the legacy fallback is disabled', async () => {
-    const { svc, legacy } = build(await row({ password_hash: null, legacy_user_id: 4242 }), { legacyEnabled: false });
-    await expectInvalid(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED));
-    expect(legacy.verify).not.toHaveBeenCalled();
+  it('never consults the local hash on this path', async () => {
+    const { svc } = build(await row({ password_hash: null, legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
+    await expect(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED_LEGACY)).resolves.toMatchObject({ itsId: ITS });
   });
 
-  it('is never consulted for an account with no legacy link', async () => {
+  it('addresses the legacy row by ITS ID when the account carries no legacy_user_id', async () => {
     const { svc, legacy } = build(await row({ legacy_user_id: null }), { legacyEnabled: true, legacyMatches: true });
-    await expectInvalid(svc.verify(ITS, 'ITS', 'wrong-password', CTX, EMBEDDED));
+    await expect(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED_LEGACY)).resolves.toMatchObject({ itsId: ITS });
+    expect(legacy.verify).toHaveBeenCalledWith(Number(ITS), 'i');
+  });
+
+  it('refuses a NON_ITS account, whose identifier cannot address a legacy row', async () => {
+    const { svc, db, legacy } = build(
+      await row({ its_id: 'NITS-BD796FB3', identity_type: 'NON_ITS', username: 'guest@example.com', legacy_user_id: null }),
+      { legacyEnabled: true, legacyMatches: true },
+    );
+    await expectInvalid(svc.verify('guest@example.com', 'NON_ITS', 'i', CTX, EMBEDDED_LEGACY));
+    expect(legacy.verify).not.toHaveBeenCalled();
+    expect(reasonsOf(db)).toContain('LEGACY_ACCOUNT_UNRESOLVABLE');
+  });
+
+  it('fails closed when MMS is unavailable rather than falling back to the hash', async () => {
+    const { svc, db } = build(await row({ legacy_user_id: 4242 }), { legacyEnabled: false });
+    // The scrypt password would be accepted under the other source; here it must not be.
+    await expectInvalid(svc.verify(ITS, 'ITS', PASSWORD, CTX, EMBEDDED_LEGACY));
+    expect(reasonsOf(db)).toContain('LEGACY_SOURCE_UNAVAILABLE');
+  });
+
+  it('does not rewrite the local hash, since MMS stays the source of truth', async () => {
+    const { svc, db } = build(await row({ legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
+    await svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED_LEGACY);
+    const writes = db.query.mock.calls.filter(([sql]) => /SET password_hash/.test(sql));
+    expect(writes).toHaveLength(0);
+    expect(reasonsOf(db)).toContain('LEGACY_PASSWORD_VERIFIED');
+  });
+
+  it('still applies the eligibility gate before the decrypt', async () => {
+    const { svc, legacy } = build(await row({ mhp_eligible: false, legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
+    await expectInvalid(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED_LEGACY));
     expect(legacy.verify).not.toHaveBeenCalled();
   });
 
-  it('does not let the legacy fallback bypass the eligibility gate', async () => {
-    const { svc, legacy } = build(await row({ mhp_eligible: false, legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: true });
-    await expectInvalid(svc.verify(ITS, 'ITS', 'i', CTX, EMBEDDED));
+  it('leaves portal login on scrypt even while Embedded Login uses the legacy source', async () => {
+    const { svc, legacy } = build(await row({ legacy_user_id: 4242 }), { legacyEnabled: true, legacyMatches: false });
+    await expect(svc.verify(ITS, 'ITS', PASSWORD, CTX, PORTAL)).resolves.toMatchObject({ itsId: ITS });
     expect(legacy.verify).not.toHaveBeenCalled();
   });
 });

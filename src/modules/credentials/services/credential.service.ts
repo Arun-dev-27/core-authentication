@@ -39,9 +39,15 @@ const COLUMNS =
  */
 export interface VerifyPolicy {
   requireMhpEligibility: boolean;
+  /**
+   * 'scrypt'         verify against users.password_hash (the long-standing behaviour).
+   * 'legacy-decrypt' decrypt MHP_User_Login.Password in MMS and compare it to the submitted
+   *                  password, and nothing else. The local hash is not consulted at all.
+   */
+  passwordSource: 'scrypt' | 'legacy-decrypt';
 }
 
-const PORTAL_POLICY: VerifyPolicy = { requireMhpEligibility: false };
+const PORTAL_POLICY: VerifyPolicy = { requireMhpEligibility: false, passwordSource: 'scrypt' };
 
 export interface AttemptContext {
   ip: string;
@@ -94,10 +100,10 @@ export class CredentialService {
       [normalized],
     );
 
-    // A row with no scrypt hash is still usable IF it is linked to a legacy account and the
-    // legacy fallback is live - that is the only way a never-migrated user can authenticate at all.
-    const legacyAvailable = row !== null && row.legacy_user_id !== null && this.legacy.enabled;
-    if (!row || (!row.password_hash && !legacyAvailable)) {
+    // Under 'legacy-decrypt' the only credential that counts is the MMS ciphertext, so a row with
+    // no local hash is still a candidate. Under 'scrypt' a missing hash is still an outright reject.
+    const usesLegacyPassword = policy.passwordSource === 'legacy-decrypt';
+    if (!row || (!row.password_hash && !usesLegacyPassword)) {
       await this.hasher.verify(password, await this.hasher.getDummyHash());
       await this.recordAttempt(idHash, null, ctx, false, 'INVALID_CREDENTIALS');
       throw Errors.invalidCredentials();
@@ -131,16 +137,30 @@ export class CredentialService {
       throw Errors.tooManyAttempts(retryAfter);
     }
 
-    // Equal work either way: a null hash still costs one scrypt verification before the fallback.
-    let valid = await this.hasher.verify(password, row.password_hash ?? (await this.hasher.getDummyHash()));
-    if (!row.password_hash) valid = false;
-    // Legacy fallback: the scrypt hash is a snapshot taken at sync time, so a password changed in
-    // MMS since then will not match it. Only consulted after scrypt has already failed, and only
-    // for an account actually linked to a legacy row.
-    let upgradeFromLegacy = false;
-    if (!valid && row.legacy_user_id !== null && this.legacy.enabled) {
-      valid = await this.legacy.verify(row.legacy_user_id, password);
-      upgradeFromLegacy = valid;
+    let valid: boolean;
+    if (usesLegacyPassword) {
+      // Embedded Login: decrypt MHP_User_Login.Password and compare, and nothing else. The legacy
+      // row is addressed by legacy_user_id when the account carries one, otherwise by the ITS ID
+      // itself - migrate:legacy writes its_id = MHP_User_Login.UserId, so the two are the same
+      // number for every account that came from MMS.
+      const legacyUserId = row.legacy_user_id ?? (/^\d+$/.test(row.its_id) ? Number(row.its_id) : null);
+      if (legacyUserId === null) {
+        // No way to address a legacy row, so there is no password to compare against.
+        await this.hasher.verify(password, await this.hasher.getDummyHash());
+        await this.recordAttempt(idHash, row.its_id, ctx, false, 'LEGACY_ACCOUNT_UNRESOLVABLE');
+        throw Errors.invalidCredentials();
+      }
+      if (!this.legacy.enabled) {
+        // Fails closed rather than silently falling back to the hash: a deployment that cannot
+        // reach MMS must not quietly authenticate Embedded Login by another route.
+        await this.hasher.verify(password, await this.hasher.getDummyHash());
+        await this.recordAttempt(idHash, row.its_id, ctx, false, 'LEGACY_SOURCE_UNAVAILABLE');
+        throw Errors.invalidCredentials();
+      }
+      valid = await this.legacy.verify(legacyUserId, password);
+    } else {
+      valid = await this.hasher.verify(password, row.password_hash ?? (await this.hasher.getDummyHash()));
+      if (!row.password_hash) valid = false;
     }
     if (!valid) {
       await this.db.query(
@@ -161,11 +181,9 @@ export class CredentialService {
     }
 
     await this.db.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE its_id = $1`, [row.its_id]);
-    // A legacy match means password_hash is stale: replace it so the next login needs no MMS at all.
-    if (upgradeFromLegacy) {
-      const upgraded = await this.hasher.hash(password);
-      await this.db.query(`UPDATE users SET password_hash = $2, password_algo = 'scrypt', password_changed_at = now() WHERE its_id = $1`, [row.its_id, upgraded]);
-      await this.recordAttempt(idHash, row.its_id, ctx, true, 'LEGACY_PASSWORD_UPGRADED');
+    if (usesLegacyPassword) {
+      // MMS stays the source of truth for this path, so the local hash is deliberately left alone.
+      await this.recordAttempt(idHash, row.its_id, ctx, true, 'LEGACY_PASSWORD_VERIFIED');
       return toUser(row);
     }
     if (row.password_hash && this.hasher.needsRehash(row.password_hash)) {
