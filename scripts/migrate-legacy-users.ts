@@ -24,6 +24,10 @@ import { LEGACY_ENTITIES } from './legacy/legacy.entities';
  *  1. decrypt legacy password with the validated C# port   (plaintext kept only in memory)
  *  2. scrypt-hash it                                        -> users.password_hash (Authentication DB)
  *  3. POST profile (ITS ID, name, email, mobile) to Authorization service /users/sync  (NO credential data)
+ *  4. mirror the Embedded Login gate onto the row: mhp_eligible (true by construction - every
+ *     selected row came through the MHP_User_Login_Eligible join), mhp_status_id
+ *     (mumin_mast_Cal_grades.Status_ID), mhp_allow_login, mhp_synced_at.
+ *     The password ciphertext is deliberately NOT mirrored; it is reversible by design.
  *
  * Idempotent: re-running updates profile/status and only re-hashes when the legacy password changed.
  * Plaintext passwords, legacy ciphertext and hashes are never logged.
@@ -33,6 +37,8 @@ interface LegacyRow {
   UserId: number;
   Password: string | null;
   Allow_Login: boolean | null;
+  /** mumin_mast_Cal_grades.Status_ID; 3 = active. Null when the person row is absent. */
+  Status_ID: number | null;
   Fullname: string | null;
   email: string | null;
   mobile_no: string | null;
@@ -88,12 +94,12 @@ async function main() {
   // Parameter placeholders for the include list: @1..@n (TOP uses @0).
   const includeParams = include.map((_, i) => `@${i + 1}`).join(', ');
   const rows = (await legacy.query(
-    `SELECT TOP (@0) l.UserId, l.Password, l.Allow_Login, g.Fullname, g.email, g.mobile_no
+    `SELECT TOP (@0) l.UserId, l.Password, l.Allow_Login, g.Status_ID, g.Fullname, g.email, g.mobile_no
        FROM MHP_User_Login l
        JOIN MHP_User_Login_Eligible e ON e.Mumin_ID = l.UserId
-       OUTER APPLY (SELECT TOP 1 m.Fullname, m.email, m.mobile_no FROM mumin_mast_Cal_grades m WHERE m.Mumin_ID = l.UserId) g
+       OUTER APPLY (SELECT TOP 1 m.Status_ID, m.Fullname, m.email, m.mobile_no FROM mumin_mast_Cal_grades m WHERE m.Mumin_ID = l.UserId) g
       WHERE l.Allow_Login = 1 AND l.Password IS NOT NULL
-      GROUP BY l.UserId, l.Password, l.Allow_Login, g.Fullname, g.email, g.mobile_no
+      GROUP BY l.UserId, l.Password, l.Allow_Login, g.Status_ID, g.Fullname, g.email, g.mobile_no
       ORDER BY CASE WHEN ${include.length ? `l.UserId IN (${includeParams})` : '1 = 0'} THEN 0 ELSE 1 END, l.UserId`,
     [limit, ...include],
   )) as LegacyRow[];
@@ -122,17 +128,20 @@ async function main() {
         const hash = unchanged ? existing[0].password_hash : await hasher.hash(plaintext);
         await auth.query(
           `UPDATE users SET name = $2, email = COALESCE($7, email), status = $3, password_hash = $4, password_algo = 'scrypt',
-                  password_changed_at = CASE WHEN $5 THEN password_changed_at ELSE now() END, legacy_user_id = $6
+                  password_changed_at = CASE WHEN $5 THEN password_changed_at ELSE now() END, legacy_user_id = $6,
+                  mhp_eligible = true, mhp_status_id = $8, mhp_allow_login = $9, mhp_synced_at = now()
             WHERE its_id = $1`,
-          [itsId, displayName, status, hash, unchanged, row.UserId, email],
+          [itsId, displayName, status, hash, unchanged, row.UserId, email, row.Status_ID, row.Allow_Login ?? false],
         );
         summary.updated++;
         if (!unchanged) summary.rehashed++;
       } else {
         await auth.query(
-          `INSERT INTO users (its_id, identity_type, username, name, email, password_hash, password_algo, credential_source, legacy_user_id, status, password_changed_at)
-           VALUES ($1, 'ITS', $1, $2, $3, $4, 'scrypt', 'LEGACY_MHP_MIGRATED', $5, $6, now())`,
-          [itsId, displayName, email, await hasher.hash(plaintext), row.UserId, status],
+          `INSERT INTO users (its_id, identity_type, username, name, email, password_hash, password_algo, credential_source, legacy_user_id, status, password_changed_at,
+                              mhp_eligible, mhp_status_id, mhp_allow_login, mhp_synced_at)
+           VALUES ($1, 'ITS', $1, $2, $3, $4, 'scrypt', 'LEGACY_MHP_MIGRATED', $5, $6, now(),
+                   true, $7, $8, now())`,
+          [itsId, displayName, email, await hasher.hash(plaintext), row.UserId, status, row.Status_ID, row.Allow_Login ?? false],
         );
         summary.created++;
       }

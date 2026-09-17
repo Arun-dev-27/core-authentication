@@ -151,8 +151,34 @@ export const envSchema = z
     LOGIN_IP_WINDOW_SECONDS: seconds(300),
 
     PORTAL_ENVIRONMENT: z.string().regex(/^[A-Z0-9_]{2,16}$/).default('DEV'),
+
+    // --- Legacy MMS eligibility gate for Embedded Login -------------------------------------
+    /**
+     * Require the mirrored MHP gate (eligible + Status_ID + Allow_Login) for any login that ends
+     * in an RS256 assertion for a client. Portal login is not affected either way.
+     */
+    MHP_ELIGIBILITY_REQUIRED: bool.default('true'),
+    /** Value of mumin_mast_Cal_grades.Status_ID that counts as active. */
+    MHP_ACTIVE_STATUS_ID: z.coerce.number().int().default(3),
+    /**
+     * Decrypt-and-compare against the live MHP_User_Login.Password when the local scrypt hash does
+     * not match, upgrading the account to scrypt on success. Needs LEGACY_DB_* and a reachable MMS;
+     * off by default, and refused in production because that password is reversible by design.
+     */
+    LEGACY_LOGIN_ENABLED: bool.default('false'),
+    LEGACY_DB_HOST: z.string().optional(),
+    LEGACY_DB_PORT: z.coerce.number().int().positive().default(1433),
+    LEGACY_DB_USER: z.string().optional(),
+    LEGACY_DB_PASSWORD: z.string().optional(),
+    LEGACY_DB_NAME: z.string().default('MMS'),
+    LEGACY_DB_ENCRYPT: bool.default('false'),
   })
   .superRefine((env, ctx) => {
+    // The decrypt fallback is useless without somewhere to read the ciphertext from, and silently
+    // doing nothing would look like "legacy login is on" while every legacy attempt failed.
+    if (env.LEGACY_LOGIN_ENABLED && !env.LEGACY_DB_HOST) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['LEGACY_DB_HOST'], message: 'is required when LEGACY_LOGIN_ENABLED is true' });
+    }
     const issuer = new URL(env.ISSUER);
     if (issuer.pathname !== '/' || issuer.search || issuer.hash) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ISSUER'], message: 'must be an origin without path' });
@@ -165,6 +191,13 @@ export const envSchema = z
       }
       if (env.AWS_ENDPOINT_URL) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['AWS_ENDPOINT_URL'], message: 'must not be set in production' });
+      }
+      if (env.LEGACY_LOGIN_ENABLED) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['LEGACY_LOGIN_ENABLED'],
+          message: 'must be false in production: it verifies against a reversible legacy password',
+        });
       }
     }
     if (env.COOKIE_SAMESITE === 'None' && !env.COOKIE_SECURE) {

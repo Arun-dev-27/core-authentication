@@ -45,13 +45,19 @@ async function main() {
   let demo = 0;
   for (const user of DEMO_USERS) {
     const rows = (await dataSource.query(
-      `INSERT INTO users (its_id, identity_type, username, name, password_hash, password_algo, credential_source, status, password_changed_at)
-       VALUES ($1, 'ITS', $1, $2, $3, 'scrypt', 'LOCAL', 'ACTIVE', now())
+      // mhp_* is mirrored as a passing gate: these are LOCAL demo accounts with no MHP row, and
+      // the Embedded Login gate applies to every client login, so without this the demo personas
+      // would all be refused. Only ever applied to credential_source = 'LOCAL' rows.
+      `INSERT INTO users (its_id, identity_type, username, name, password_hash, password_algo, credential_source, status, password_changed_at,
+                          mhp_eligible, mhp_status_id, mhp_allow_login, mhp_synced_at)
+       VALUES ($1, 'ITS', $1, $2, $3, 'scrypt', 'LOCAL', 'ACTIVE', now(),
+               true, $4, true, now())
        ON CONFLICT (its_id) DO UPDATE SET name = EXCLUDED.name, password_hash = EXCLUDED.password_hash, status = 'ACTIVE',
-         failed_login_count = 0, locked_until = NULL
+         failed_login_count = 0, locked_until = NULL,
+         mhp_eligible = true, mhp_status_id = EXCLUDED.mhp_status_id, mhp_allow_login = true, mhp_synced_at = now()
        WHERE users.credential_source = 'LOCAL'
        RETURNING its_id`,
-      [user.itsId, user.name, await hasher.hash(demoPassword)],
+      [user.itsId, user.name, await hasher.hash(demoPassword), env.MHP_ACTIVE_STATUS_ID],
     )) as unknown[];
     demo += rows.length;
     await sync({ its_id: user.itsId, name: user.name });
@@ -62,10 +68,13 @@ async function main() {
     const existing = (await dataSource.query(`SELECT its_id FROM users WHERE username = $1`, [username])) as { its_id: string }[];
     const itsId = existing[0]?.its_id ?? `NITS-${randomBytes(4).toString('hex').toUpperCase()}`;
     await dataSource.query(
-      `INSERT INTO users (its_id, identity_type, username, name, email, password_hash, password_algo, credential_source, password_changed_at)
-       VALUES ($1, 'NON_ITS', $2, 'Guest Member', $3, $4, 'scrypt', 'LOCAL', now())
-       ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, status = 'ACTIVE', failed_login_count = 0, locked_until = NULL`,
-      [itsId, username, username.includes('@') ? username : null, await hasher.hash(nonItsPassword)],
+      `INSERT INTO users (its_id, identity_type, username, name, email, password_hash, password_algo, credential_source, password_changed_at,
+                          mhp_eligible, mhp_status_id, mhp_allow_login, mhp_synced_at)
+       VALUES ($1, 'NON_ITS', $2, 'Guest Member', $3, $4, 'scrypt', 'LOCAL', now(),
+               true, $5, true, now())
+       ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, status = 'ACTIVE', failed_login_count = 0, locked_until = NULL,
+         mhp_eligible = true, mhp_status_id = EXCLUDED.mhp_status_id, mhp_allow_login = true, mhp_synced_at = now()`,
+      [itsId, username, username.includes('@') ? username : null, await hasher.hash(nonItsPassword), env.MHP_ACTIVE_STATUS_ID],
     );
     await sync({ its_id: itsId, name: 'Guest Member', ...(username.includes('@') ? { email: username } : {}) });
     nonIts = itsId;

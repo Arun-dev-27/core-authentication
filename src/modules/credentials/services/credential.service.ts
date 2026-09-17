@@ -7,6 +7,8 @@ import { currentCorrelationId } from '@common/logging/request-context';
 import { sha256Hex } from '@common/utils/crypto.util';
 import { queryOne } from '@core/database/sql';
 import { AuthenticatedUser, IdentityType } from '@shared/types/auth.types';
+import { LegacyCredentialService } from './legacy-credential.service';
+import { MhpEligibilityReason, checkMhpEligibility } from './mhp-eligibility';
 import { PasswordHasher } from './password-hasher';
 
 /** Row of the Authentication DB `users` table (ITS ID is the primary key; password_hash is scrypt). */
@@ -19,9 +21,27 @@ interface UserRow {
   status: 'ACTIVE' | 'LOCKED' | 'DISABLED';
   failed_login_count: number;
   locked_until: Date | null;
+  legacy_user_id: number | null;
+  mhp_eligible: boolean;
+  mhp_status_id: number | null;
+  mhp_allow_login: boolean | null;
+  mhp_synced_at: Date | null;
 }
 
-const COLUMNS = 'its_id, identity_type, username, name, password_hash, status, failed_login_count, locked_until';
+const COLUMNS =
+  'its_id, identity_type, username, name, password_hash, status, failed_login_count, locked_until, ' +
+  'legacy_user_id, mhp_eligible, mhp_status_id, mhp_allow_login, mhp_synced_at';
+
+/**
+ * Per-call policy, so the SAME verify() serves both flows without one changing the other.
+ * Embedded Login (any login that ends in an RS256 client assertion) passes
+ * requireMhpEligibility; portal login does not and behaves exactly as before.
+ */
+export interface VerifyPolicy {
+  requireMhpEligibility: boolean;
+}
+
+const PORTAL_POLICY: VerifyPolicy = { requireMhpEligibility: false };
 
 export interface AttemptContext {
   ip: string;
@@ -54,9 +74,16 @@ export class CredentialService {
   constructor(
     @InjectDataSource() private readonly db: DataSource,
     private readonly config: AppConfig,
+    private readonly legacy: LegacyCredentialService,
   ) {}
 
-  async verify(identifier: string, type: IdentityType, password: string, ctx: AttemptContext): Promise<AuthenticatedUser> {
+  async verify(
+    identifier: string,
+    type: IdentityType,
+    password: string,
+    ctx: AttemptContext,
+    policy: VerifyPolicy = PORTAL_POLICY,
+  ): Promise<AuthenticatedUser> {
     const normalized = normalizeIdentifier(identifier, type);
     const idHash = identifierHash(identifier, type);
     const row = await queryOne<UserRow>(
@@ -67,20 +94,54 @@ export class CredentialService {
       [normalized],
     );
 
-    if (!row || !row.password_hash) {
+    // A row with no scrypt hash is still usable IF it is linked to a legacy account and the
+    // legacy fallback is live - that is the only way a never-migrated user can authenticate at all.
+    const legacyAvailable = row !== null && row.legacy_user_id !== null && this.legacy.enabled;
+    if (!row || (!row.password_hash && !legacyAvailable)) {
       await this.hasher.verify(password, await this.hasher.getDummyHash());
       await this.recordAttempt(idHash, null, ctx, false, 'INVALID_CREDENTIALS');
       throw Errors.invalidCredentials();
     }
 
+    // MHP eligibility gate, ahead of the password exactly as the flow specifies. The client sees
+    // the same INVALID_CREDENTIALS as an unknown account, and a dummy hash keeps the timing of a
+    // rejected-but-existing account indistinguishable - otherwise this endpoint would answer
+    // "is this ITS ID eligible?" for anyone who asked.
+    if (policy.requireMhpEligibility && this.config.env.MHP_ELIGIBILITY_REQUIRED) {
+      const gate = checkMhpEligibility(
+        {
+          mhpEligible: row.mhp_eligible,
+          mhpStatusId: row.mhp_status_id,
+          mhpAllowLogin: row.mhp_allow_login,
+          mhpSyncedAt: row.mhp_synced_at,
+        },
+        this.config.env.MHP_ACTIVE_STATUS_ID,
+      );
+      if (!gate.ok) {
+        await this.hasher.verify(password, row.password_hash ?? (await this.hasher.getDummyHash()));
+        await this.recordAttempt(idHash, row.its_id, ctx, false, gate.reason satisfies MhpEligibilityReason);
+        throw Errors.invalidCredentials();
+      }
+    }
+
     if (row.locked_until && new Date(row.locked_until).getTime() > Date.now()) {
       const retryAfter = Math.ceil((new Date(row.locked_until).getTime() - Date.now()) / 1000);
-      await this.hasher.verify(password, row.password_hash);
+      await this.hasher.verify(password, row.password_hash ?? (await this.hasher.getDummyHash()));
       await this.recordAttempt(idHash, row.its_id, ctx, false, 'ACCOUNT_TEMPORARILY_LOCKED');
       throw Errors.tooManyAttempts(retryAfter);
     }
 
-    const valid = await this.hasher.verify(password, row.password_hash);
+    // Equal work either way: a null hash still costs one scrypt verification before the fallback.
+    let valid = await this.hasher.verify(password, row.password_hash ?? (await this.hasher.getDummyHash()));
+    if (!row.password_hash) valid = false;
+    // Legacy fallback: the scrypt hash is a snapshot taken at sync time, so a password changed in
+    // MMS since then will not match it. Only consulted after scrypt has already failed, and only
+    // for an account actually linked to a legacy row.
+    let upgradeFromLegacy = false;
+    if (!valid && row.legacy_user_id !== null && this.legacy.enabled) {
+      valid = await this.legacy.verify(row.legacy_user_id, password);
+      upgradeFromLegacy = valid;
+    }
     if (!valid) {
       await this.db.query(
         `UPDATE users SET
@@ -100,7 +161,14 @@ export class CredentialService {
     }
 
     await this.db.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE its_id = $1`, [row.its_id]);
-    if (this.hasher.needsRehash(row.password_hash)) {
+    // A legacy match means password_hash is stale: replace it so the next login needs no MMS at all.
+    if (upgradeFromLegacy) {
+      const upgraded = await this.hasher.hash(password);
+      await this.db.query(`UPDATE users SET password_hash = $2, password_algo = 'scrypt', password_changed_at = now() WHERE its_id = $1`, [row.its_id, upgraded]);
+      await this.recordAttempt(idHash, row.its_id, ctx, true, 'LEGACY_PASSWORD_UPGRADED');
+      return toUser(row);
+    }
+    if (row.password_hash && this.hasher.needsRehash(row.password_hash)) {
       const upgraded = await this.hasher.hash(password);
       await this.db.query(`UPDATE users SET password_hash = $2, password_algo = 'scrypt' WHERE its_id = $1`, [row.its_id, upgraded]);
     }
