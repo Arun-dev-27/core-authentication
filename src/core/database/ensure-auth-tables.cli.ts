@@ -10,13 +10,19 @@ import { ensureAuthTables, inspectIdentitySchema } from './identity-schema';
  *   npm run db:ensure-auth-tables            create what is missing
  *   npm run db:ensure-auth-tables -- --check report only, change nothing (exit 1 if anything is missing)
  *
+ * Creating tables is a development action: with NODE_ENV=production it refuses unless the operator passes
+ * --allow-production explicitly. --check is read-only and always allowed.
+ *
  * Safe to run repeatedly. Compiled into dist/, so a deploy can run it without ts-node:
- *   node dist/core/database/ensure-auth-tables.cli.js
+ *   node dist/core/database/ensure-auth-tables.cli.js --allow-production
  */
 async function main() {
   loadEnvFiles();
   const env = loadEnv();
   const checkOnly = process.argv.includes('--check');
+  if (!checkOnly && env.NODE_ENV === 'production' && !process.argv.includes('--allow-production')) {
+    throw new Error('refusing to create tables with NODE_ENV=production: this is a development action (pass --allow-production to override)');
+  }
   const db = new DataSource(buildDataSourceOptions(env));
   await db.initialize();
   try {

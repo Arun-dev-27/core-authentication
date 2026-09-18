@@ -14,7 +14,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json",
     "db:ensure-auth-tables": "node -r ts-node/register/transpile-only -r tsconfig-paths/register src/core/database/ensure-auth-tables.cli.ts",
     "db:check": "node -r ts-node/register/transpile-only -r tsconfig-paths/register src/core/database/ensure-auth-tables.cli.ts --check",
-    "db:ensure-auth-tables:prod": "node dist/core/database/ensure-auth-tables.cli.js",
+    "db:ensure-auth-tables:prod": "node dist/core/database/ensure-auth-tables.cli.js --allow-production",
     "keys:generate": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/signing-keys.ts generate",
     "keys:rotate": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/signing-keys.ts",
     "seed:clients": "node -r ts-node/register/transpile-only -r tsconfig-paths/register scripts/seed-clients.ts",
