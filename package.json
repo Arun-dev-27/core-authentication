@@ -30,8 +30,8 @@
     "example:ams": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/bu-reference-app/src/server.ts --env examples/bu-reference-app/env/ams.env",
     "example:vms": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/bu-reference-app/src/server.ts --env examples/bu-reference-app/env/vms.env",
     "test:browser": "node -r ts-node/register/transpile-only -r tsconfig-paths/register test/browser/federation.browser-e2e.ts",
-    "docker:up": "docker compose -f docker/docker-compose.yml up -d --build",
-    "docker:down": "docker compose -f docker/docker-compose.yml down",
+    "docker:up": "docker compose --env-file .env -f docker/docker-compose.yml up -d --build",
+    "docker:down": "docker compose --env-file .env -f docker/docker-compose.yml down",
     "docker:build": "docker build -f docker/Dockerfile -t miqaat-identity-federation-service:local .",
     "example:playground": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/embed-playground/server.ts",
     "example:login": "node -r ts-node/register/transpile-only -r tsconfig-paths/register examples/login-page/server.ts"

@@ -21,11 +21,20 @@ services:
     container_name: miqaat-authn
     env_file:
       - ../.env
+    environment:
+      # Only these three can differ between a host run and a container run, and only while the
+      # database / Redis / authorization service are containers on this machine: there "localhost"
+      # in ../.env means the container itself. Setting DOCKER_* in that same file overrides them.
+      # Point at real endpoints (RDS, ElastiCache, a deployed authz service) and DOCKER_* is not
+      # needed at all - drop those lines and the normal values are used, host and container alike.
+      IDENTITY_DB_HOST: ${DOCKER_IDENTITY_DB_HOST:-${IDENTITY_DB_HOST}}
+      REDIS_URL: ${DOCKER_REDIS_URL:-${REDIS_URL}}
+      AUTHZ_BASE_URL: ${DOCKER_AUTHZ_BASE_URL:-${AUTHZ_BASE_URL}}
     ports:
       - "3001:3001"
     volumes:
-      # SIGNING_KEY_PROVIDER=file: the keyset created on the host with `npm run keys:generate` (../.keys) is
-      # mounted, so the container and a rebuild keep signing with the same keys. Nothing database-related.
+      # Signing keys come from AWS SSM (SIGNING_KEY_PROVIDER=ssm), not from disk. ../.keys is mounted
+      # read-only only so a fallback to the file provider still finds a keyset. Nothing database-related.
       - ../.keys:/app/.keys:ro
     restart: unless-stopped
 
